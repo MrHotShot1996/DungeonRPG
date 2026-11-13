@@ -1106,7 +1106,13 @@ class Game:
                 ("CONTROLS", lambda: self.open_controls('paused')), ("QUIT TO TITLE", self.go_title)]
 
     def menu_items(self):
-        return self.title_items() if self.state == 'title' else self.pause_items() if self.state == 'paused' else []
+        if self.state == 'title':
+            return self.title_items()
+        if self.state == 'paused':
+            return self.pause_items()
+        if self.state == 'music':
+            return self.music_items()
+        return []
 
     def go_select(self):
         self.audio.play('select')
