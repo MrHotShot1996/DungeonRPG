@@ -14,6 +14,8 @@ sys.path.insert(0, os.getcwd())
 
 
 def ensure_pygame():
+    if getattr(sys, 'frozen', False):
+        return  # the .exe build already has pygame bundled inside it
     try:
         import pygame  # noqa: F401
         return

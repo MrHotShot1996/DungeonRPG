@@ -2,6 +2,7 @@
 import math
 import os
 import random
+import sys
 
 import pygame
 
@@ -49,7 +50,10 @@ class Game:
             self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption(TITLE)
         self.clock = pygame.time.Clock()
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # when bundled into an .exe (PyInstaller), __file__ lives in a throwaway temp
+        # folder, so settings must be saved next to the real .exe instead
+        base_dir = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) \
+            else os.path.dirname(os.path.abspath(__file__))
         self.audio = Audio(os.path.join(base_dir, 'audio.json'))
         self.sprites = Sprites()
         pygame.display.set_icon(pygame.transform.smoothscale(self.sprites.player[('knight', 'down', 0)], (32, 32)))
