@@ -57,6 +57,11 @@ The pad vibrates when you get hit, dash, or use big attacks (you can turn this o
 On-screen hints switch between keyboard keys and PlayStation symbols automatically,
 depending on which one you touched last.
 
+## Changing the music
+Title screen -> **Music** (or Pause -> Music). Pick from 4 tunes (Catacombs, War March, Moonlit Keep,
+Goblin's Jig) or **No Music** to turn the background music off while keeping sound effects on.
+Your choice is saved in `audio.json`.
+
 ## Changing the controls
 Title screen -> **Controls** (or Pause -> Controls). Three tabs:
 - **Keyboard** and **PS5 Controller**: pick an action, choose the MAIN or ALTERNATIVE slot

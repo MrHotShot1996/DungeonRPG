@@ -1,13 +1,39 @@
 """sounds.py - makes ALL the sound effects and music with math! No sound files needed.
 A sound is just a list of numbers that wiggle up and down really fast (a 'wave')."""
 import array
+import json
 import math
+import os
 import random
 import threading
 
 import pygame
 
 RATE = 22050
+
+# Each entry describes one background tune: a 4-bar bass line, a 4-chord progression,
+# a pentatonic scale for the little melodic flourishes, a tempo ('beat'), and which
+# wave shapes the bass/chords/lead use. 'off' is the silent "no music" choice.
+MUSIC_TRACKS = [
+    {'key': 'catacombs', 'name': 'Catacombs', 'bass': [45, 41, 48, 43],
+     'chords': [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62]],
+     'pent': [69, 72, 74, 76, 79, 81], 'beat': 0.28, 'bars': 8, 'seed': 11,
+     'bass_kind': 'tri', 'chord_kind': 'square', 'lead_kind': 'sine'},
+    {'key': 'warmarch', 'name': 'War March', 'bass': [41, 41, 48, 46],
+     'chords': [[53, 57, 60], [53, 57, 60], [58, 62, 65], [55, 58, 62]],
+     'pent': [65, 69, 72, 74, 77], 'beat': 0.2, 'bars': 8, 'seed': 3,
+     'bass_kind': 'saw', 'chord_kind': 'square', 'lead_kind': 'square'},
+    {'key': 'moonlit', 'name': 'Moonlit Keep', 'bass': [40, 45, 38, 43],
+     'chords': [[52, 55, 59], [57, 60, 64], [50, 55, 59], [55, 59, 62]],
+     'pent': [64, 67, 69, 72, 76, 79], 'beat': 0.4, 'bars': 6, 'seed': 7,
+     'bass_kind': 'sine', 'chord_kind': 'sine', 'lead_kind': 'sine'},
+    {'key': 'goblinjig', 'name': "Goblin's Jig", 'bass': [43, 43, 48, 41],
+     'chords': [[55, 59, 62], [53, 57, 60], [58, 62, 65], [50, 55, 58]],
+     'pent': [67, 70, 72, 75, 79], 'beat': 0.22, 'bars': 8, 'seed': 21,
+     'bass_kind': 'square', 'chord_kind': 'tri', 'lead_kind': 'square'},
+    {'key': 'off', 'name': 'No Music'},
+]
+MUSIC_KEYS = [t['key'] for t in MUSIC_TRACKS]
 
 
 def _wave(kind, p):
@@ -55,14 +81,17 @@ def midi(m):
 
 
 class Audio:
-    def __init__(self):
+    def __init__(self, path=None):
         global RATE
+        self.path = path
         self.enabled = False
         self.muted = False
         self.sfx = {}
+        self.tracks = {}
         self.music = None
         self.channel = None
         self._music_ready = False
+        self.track_key = self._load_track()
         try:
             pygame.mixer.quit()
             pygame.mixer.init(RATE, -16, 1, 512)
@@ -73,6 +102,27 @@ class Audio:
             print("Sound could not start (game will be silent):", e)
             return
         threading.Thread(target=self._build_all, daemon=True).start()
+
+    # ---------------------------------------------------------------- saving & loading which track you picked
+    def _load_track(self):
+        default = MUSIC_TRACKS[0]['key']
+        if not self.path or not os.path.exists(self.path):
+            return default
+        try:
+            with open(self.path, 'r') as f:
+                key = json.load(f).get('track', default)
+            return key if key in MUSIC_KEYS else default
+        except Exception:
+            return default
+
+    def _save_track(self):
+        if not self.path:
+            return
+        try:
+            with open(self.path, 'w') as f:
+                json.dump({'track': self.track_key}, f)
+        except Exception:
+            pass
 
     def _build_all(self):
         self._build_sfx()
@@ -133,53 +183,70 @@ class Audio:
         for k, v in d.items():
             self.sfx[k] = self._to_sound(v)
 
+    def _build_one_track(self, rec):
+        """Builds one looping tune from a recipe, out of 3 'instruments' (bass/chords/lead)."""
+        beat, bars = rec['beat'], rec['bars']
+        step = int(RATE * beat)
+        total = step * 8 * bars
+        buf = [0.0] * total
+        cache = {}
+
+        def note(m, dur, kind, vol, decay=1.5):
+            key = (m, dur, kind, vol)
+            if key not in cache:
+                cache[key] = tone(midi(m), dur, kind, vol, decay=decay)
+            return cache[key]
+
+        def add(samples, start):
+            end = min(total, start + len(samples))
+            for i in range(end - start):
+                buf[start + i] += samples[i]
+
+        bass, chords, pent = rec['bass'], rec['chords'], rec['pent']
+        rng = random.Random(rec['seed'])
+        for bar in range(bars):
+            ch, b = chords[bar % 4], bass[bar % 4]
+            for k in range(8):
+                start = (bar * 8 + k) * step
+                if k % 2 == 0:
+                    add(note(b, beat * 1.8, rec['bass_kind'], .45, 1.0), start)
+                add(note(ch[[0, 1, 2, 1, 0, 1, 2, 1][k]] + 12, beat * .9, rec['chord_kind'], .06), start)
+                if k % 2 == 1:
+                    add(tone(0, .04, 'noise', .04), start)
+            for q in range(4):
+                if bar >= 2 and rng.random() < 0.6:
+                    add(note(rng.choice(pent), beat * 1.8, rec['lead_kind'], .15, 1.0), (bar * 8 + q * 2) * step)
+        return buf
+
     def _build_music(self):
-        """A spooky little looping tune in A minor, built from 3 'instruments'."""
         try:
-            beat = 0.28
-            bars = 8
-            step = int(RATE * beat)
-            total = step * 8 * bars
-            buf = [0.0] * total
-            cache = {}
-
-            def note(m, dur, kind, vol, decay=1.5):
-                key = (m, dur, kind, vol)
-                if key not in cache:
-                    cache[key] = tone(midi(m), dur, kind, vol, decay=decay)
-                return cache[key]
-
-            def add(samples, start):
-                end = min(total, start + len(samples))
-                for i in range(end - start):
-                    buf[start + i] += samples[i]
-
-            bass = [45, 41, 48, 43]
-            chords = [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62]]
-            pent = [69, 72, 74, 76, 79, 81]
-            rng = random.Random(11)
-            for bar in range(bars):
-                ch, b = chords[bar % 4], bass[bar % 4]
-                for k in range(8):
-                    start = (bar * 8 + k) * step
-                    if k % 2 == 0:
-                        add(note(b, beat * 1.8, 'tri', .45, 1.0), start)
-                    add(note(ch[[0, 1, 2, 1, 0, 1, 2, 1][k]] + 12, beat * .9, 'square', .06), start)
-                    if k % 2 == 1:
-                        add(tone(0, .04, 'noise', .04), start)
-                for q in range(4):
-                    if bar >= 2 and rng.random() < 0.6:
-                        add(note(rng.choice(pent), beat * 1.8, 'sine', .15, 1.0), (bar * 8 + q * 2) * step)
-            self.music = self._to_sound(buf, 0.7)
+            for rec in MUSIC_TRACKS:
+                if rec['key'] == 'off':
+                    continue
+                self.tracks[rec['key']] = self._to_sound(self._build_one_track(rec), 0.7)
             self._music_ready = True
+            self.music = self.tracks.get(self.track_key)
         except Exception as e:
             print("Music failed:", e)
 
     def update(self):
-        if self.enabled and self._music_ready and self.channel is None:
+        if self.enabled and self._music_ready and self.channel is None and self.music is not None:
             self.channel = self.music.play(loops=-1)
             if self.channel:
                 self.channel.set_volume(0.0 if self.muted else 0.35)
+
+    def set_track(self, key):
+        """Switches the background music (called from the MUSIC menu). key='off' plays nothing."""
+        if key == self.track_key or key not in MUSIC_KEYS:
+            return
+        self.track_key = key
+        self._save_track()
+        if self.channel:
+            self.channel.stop()
+            self.channel = None
+        if self._music_ready:
+            self.music = self.tracks.get(key)
+            self.update()
 
     def play(self, name):
         if self.enabled and not self.muted and name in self.sfx:

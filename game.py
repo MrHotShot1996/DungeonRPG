@@ -9,7 +9,7 @@ from settings import *
 from dungeon import Dungeon, FLOOR
 from entities import (Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
 from sprites import Sprites, make_icon, ui_icon, shade, add
-from sounds import Audio
+from sounds import Audio, MUSIC_TRACKS
 from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS
 from biomes import biome, floor_name
 from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon)
@@ -49,7 +49,8 @@ class Game:
             self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption(TITLE)
         self.clock = pygame.time.Clock()
-        self.audio = Audio()
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.audio = Audio(os.path.join(base_dir, 'audio.json'))
         self.sprites = Sprites()
         pygame.display.set_icon(pygame.transform.smoothscale(self.sprites.player[('knight', 'down', 0)], (32, 32)))
         self.fonts, self._text_cache, self._panels, self._masks = {}, {}, {}, {}
@@ -83,7 +84,7 @@ class Game:
         self.torches, self.static_lights = [], []
         self.pal = biome(1)
         self.sel = 0
-        self.input = Input(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'controls.json'))
+        self.input = Input(os.path.join(base_dir, 'controls.json'))
         self.toasts = []                      # little pop-up notes ("Controller connected")
         self.menu_sel = 0
         self.return_state = 'title'           # where the Controls screen goes back to
@@ -1097,12 +1098,12 @@ class Game:
                       'stick_attack': 'Right stick auto-attacks', 'aim_assist': 'Aim assist'}
 
     def title_items(self):
-        return [("START GAME", self.go_select), ("CONTROLS", lambda: self.open_controls('title')),
-                ("QUIT", self.quit_game)]
+        return [("START GAME", self.go_select), ("MUSIC", lambda: self.open_music('title')),
+                ("CONTROLS", lambda: self.open_controls('title')), ("QUIT", self.quit_game)]
 
     def pause_items(self):
-        return [("RESUME", self.resume), ("CONTROLS", lambda: self.open_controls('paused')),
-                ("QUIT TO TITLE", self.go_title)]
+        return [("RESUME", self.resume), ("MUSIC", lambda: self.open_music('paused')),
+                ("CONTROLS", lambda: self.open_controls('paused')), ("QUIT TO TITLE", self.go_title)]
 
     def menu_items(self):
         return self.title_items() if self.state == 'title' else self.pause_items() if self.state == 'paused' else []
@@ -1133,7 +1134,36 @@ class Game:
     def close_controls(self):
         self.audio.play('select')
         self.state = self.return_state
+        self.menu_sel = 2
+
+    # ------------------------------------------------------------ the MUSIC screen
+    def music_items(self):
+        items = [(rec['name'], (lambda k=rec['key']: self.choose_track(k))) for rec in MUSIC_TRACKS]
+        items.append(("BACK", self.close_music))
+        return items
+
+    def open_music(self, back_to):
+        self.audio.play('select')
+        self.return_state = back_to
+        self.state = 'music'
+        self.menu_sel = next((i for i, rec in enumerate(MUSIC_TRACKS) if rec['key'] == self.audio.track_key), 0)
+
+    def close_music(self):
+        self.audio.play('select')
+        self.state = self.return_state
         self.menu_sel = 1
+
+    def choose_track(self, key):
+        self.audio.set_track(key)
+        name = next(rec['name'] for rec in MUSIC_TRACKS if rec['key'] == key)
+        self.audio.play('select')
+        self.toast(f"Music: {name}", (170, 230, 255))
+
+    def music_input(self):
+        if self.input.nav('back'):
+            self.close_music()
+        else:
+            self.menu_input(self.music_items())
 
     def menu_input(self, items):
         inp = self.input
@@ -1266,6 +1296,8 @@ class Game:
                 self.menu_input(self.pause_items())
         elif st == 'controls':
             self.controls_input()
+        elif st == 'music':
+            self.music_input()
         elif st in ('dead', 'victory'):
             if inp.nav('confirm'):
                 self.go_title()
@@ -2164,6 +2196,27 @@ class Game:
         from inputs import key_label
         return key_label(code)
 
+    # ------------------------------------------------------------ the MUSIC screen
+    def draw_music(self):
+        self.lit_backdrop([(WIDTH // 2, 300, 500, 0.5)])
+        self.dim((0, 0, 10), 70)
+        self.text("BACKGROUND MUSIC", 56, (255, 214, 90), (WIDTH // 2, 76), center=True, outline=True)
+        self.text("Pick the tune that plays while you explore", 24, (190, 190, 220), (WIDTH // 2, 124), center=True)
+        items = self.music_items()
+        y0 = 172
+        for i, (label, _) in enumerate(items):
+            r = pygame.Rect(WIDTH // 2 - 230, y0 + i * 62, 460, 52)
+            sel = i == self.menu_sel
+            playing = i < len(MUSIC_TRACKS) and MUSIC_TRACKS[i]['key'] == self.audio.track_key
+            self.panel(r, alpha=235 if sel else 200, border=(255, 214, 90) if sel else (110, 100, 130), radius=12,
+                       glow=(255, 214, 90) if sel else None)
+            shown = ("NOW PLAYING: " if playing else "") + label
+            self.text(shown, 30, (255, 255, 255) if sel else (170, 170, 195), r.center, center=True, outline=sel)
+            self._hits.append((r, 'menu', i))
+        how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
+        self.draw_inline([how, ('nav', 'confirm'), " to choose     ", ('nav', 'back'), " back"],
+                          WIDTH // 2, y0 + len(items) * 62 + 20, 24)
+
     # ------------------------------------------------------------ the main draw
     def draw(self):
         scr = self.screen
@@ -2175,6 +2228,8 @@ class Game:
             self.draw_select()
         elif st == 'controls':
             self.draw_controls()
+        elif st == 'music':
+            self.draw_music()
         else:
             scr.fill((0, 0, 0))
             self.draw_world()
