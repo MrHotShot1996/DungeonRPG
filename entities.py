@@ -56,7 +56,8 @@ class Player(Entity):
         self.ability_cd = [0.0, 0.0, 0.0]
         self.ability_max = [1.0, 1.0, 1.0]
         self.buffs = {}
-        self.sky_mark_enemy = None   # Monk's Sky Strike mark, used for the teleport recast
+        self.sky_mark_enemy = None   # Monk's Sky Strike mark: the monster the orb is stuck to
+        self.launch, self.launch_t = None, 0.0   # ...and the monster we are FLYING at after the recast
         self.slow_t = 0.0
         self.spin = 0.0
         self.hurt_flash = 0.0
@@ -83,6 +84,10 @@ class Player(Entity):
             self.buffs[k] -= dt
             if self.buffs[k] <= 0:
                 del self.buffs[k]
+
+        if self.launch_t > 0:                        # Monk mid-flight: nothing else until we land
+            self.fly_to_mark(dt, game)
+            return
 
         sp = self.speed * (0.5 if self.slow_t > 0 else 1.0)
         vec = inp.move_vector()                      # length 0..1  (a gentle stick push = a slow walk)
@@ -117,6 +122,30 @@ class Player(Entity):
 
         if (inp.held('attack') or inp.stick_attacking()) and self.attack_cd <= 0:
             game.player_attack()
+
+    def fly_to_mark(self, dt, game):
+        """Sky Strike recast: rocket toward the marked monster and hit it when we arrive."""
+        e = self.launch
+        self.launch_t -= dt
+        if e is None or e not in game.enemies:       # it died while we were in the air
+            self.launch, self.launch_t = None, 0.0
+            return
+        dx, dy = e.x - self.x, e.y - self.y
+        dist = math.hypot(dx, dy) or 1.0
+        reach = (e.w + self.w) / 2 + 6
+        self.face = V2(dx / dist, dy / dist)
+        self.invuln = max(self.invuln, 0.15)
+        self.kx = self.ky = 0.0
+        self.moving = False
+        step = min(950 * dt, max(0.0, dist - reach))
+        self.move(dx / dist * step, dy / dist * step, game.dungeon)
+        game.burst(self.x, self.y + 4, (255, 235, 150), 3, 60, glow=True)
+        if math.hypot(e.x - self.x, e.y - self.y) <= reach + 4:
+            self.launch, self.launch_t = None, 0.0
+            game.sky_strike_land(e)
+        elif self.launch_t <= 0:                     # a wall was in the way for too long
+            self.launch, self.launch_t = None, 0.0
+            game.float_text(self.x, self.y - 30, "Blocked!", (200, 200, 200))
 
     def hurt(self, dmg, sx, sy, game):
         if self.invuln > 0 or self.hp <= 0:
@@ -184,6 +213,8 @@ class Enemy(Entity):
         self.strafe = random.choice((-1, 1))
         self.phase = 1
         self.stun_t = self.slow_t = self.poison_t = 0.0
+        self.freeze_t = 0.0        # frozen solid (Ghala's Frozen Heart)
+        self.petal_cd = 0.0        # how soon Ghala's flower ring may hit this monster again
         self.poison_dps, self.poison_tick = 0.0, 0.5
         self.state = 'chase'
         self.state_t = random.uniform(1.0, 2.5)
@@ -221,6 +252,13 @@ class Enemy(Entity):
                 if self.hp <= 0:
                     return
         self.slow_t = max(0.0, self.slow_t - dt)
+        self.petal_cd = max(0.0, self.petal_cd - dt)
+
+        if self.freeze_t > 0:                        # frozen solid: can't move, slide or attack
+            self.freeze_t -= dt
+            self.kx = self.ky = 0.0
+            self.warn = False
+            return
 
         if abs(self.kx) > 5 or abs(self.ky) > 5:
             self.move(self.kx * dt, self.ky * dt, d)
@@ -624,10 +662,12 @@ class Projectile:
 class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
-                 kind='magic', crit=False, leech=False):
+                 kind='magic', crit=False, leech=False, mark=False, freeze=0.0):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
+        self.mark = mark       # Monk's Sky Strike: the orb sticks to the first monster it hits
+        self.freeze = freeze   # Ghala's Frozen Heart: seconds the monster it hits stays frozen
         self.alive = True
         self.hit = set()
 
@@ -661,6 +701,13 @@ class Bolt:
                     return
                 game.damage_enemy(e, int(self.dmg), crit=self.crit, origin=(self.x - self.vx, self.y - self.vy),
                                   leech=self.leech)
+                if self.mark and e in game.enemies:   # only mark it if the hit didn't kill it outright
+                    p = game.player
+                    p.sky_mark_enemy = e
+                    p.buffs['sky_mark'] = 4.0
+                    game.float_text(e.x, e.y - 40, "MARKED!", (255, 210, 90), big=True)
+                if self.freeze and e in game.enemies:
+                    game.freeze_enemy(e, self.freeze)
                 if not self.pierce:
                     self.alive = False
                     return

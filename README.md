@@ -8,7 +8,8 @@
 
 ## Pick your hero (7 classes, 10 floors)
 Knight, Ghala the Mage (pink!), Rogue, Cleric, Necromancer (raises the dead), Beastmaster (calls beasts),
-Monk (fast martial artist - marks a monster with a flying strike, then teleports in to finish them).
+Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
+Ghala throws a Frozen Heart that freezes a monster solid, and spins a damaging Flower Ring around herself.
 Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
 Floors 5 and 10 have bosses. Hold the Stats button to see your numbers.
 

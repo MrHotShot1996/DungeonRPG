@@ -843,6 +843,26 @@ def make_icon(icon, color, size=56):
             dx, dy = math.cos(math.radians(ang)) * r, math.sin(math.radians(ang)) * r
             P.line(s, c, (cx - dx, cy - dy), (cx + dx, cy + dy), L(3))
         P.circle(s, w, (cx, cy), L(3))
+    elif icon == 'heart':
+        k = r * 0.56
+        pts = [(cx - r, cy - L(2)), (cx, cy + r + L(2)), (cx + r, cy - L(2))]
+        for col, grow in ((w, L(3)), (c, 0)):
+            P.circle(s, col, (int(cx - k), int(cy - k * 0.55)), int(k + grow))
+            P.circle(s, col, (int(cx + k), int(cy - k * 0.55)), int(k + grow))
+            P.polygon(s, col, [(pts[0][0] - grow, pts[0][1]), (pts[1][0], pts[1][1] + grow * 1.4),
+                               (pts[2][0] + grow, pts[2][1])])
+        for ang in (0, 60, 120):                       # a little snowflake in the middle
+            dx, dy = math.cos(math.radians(ang)) * L(7), math.sin(math.radians(ang)) * L(7)
+            P.line(s, (200, 240, 255), (cx - dx, cy - dy), (cx + dx, cy + dy), L(2))
+    elif icon == 'flower':
+        for i in range(6):
+            a = i * math.pi / 3
+            fx, fy = cx + math.cos(a) * r * 0.78, cy + math.sin(a) * r * 0.78
+            for j in range(5):
+                b = a + j * 2 * math.pi / 5
+                P.circle(s, c, (int(fx + math.cos(b) * L(4)), int(fy + math.sin(b) * L(4))), L(3))
+            P.circle(s, (255, 230, 110), (int(fx), int(fy)), L(2))
+        P.circle(s, w, (cx, cy), L(3))
     elif icon in ('bolt', 'smite'):
         pts = [(cx + L(3), cy - r - L(2)), (cx - r // 2 - L(1), cy + L(2)), (cx, cy + L(2)), (cx - L(3), cy + r + L(2)),
                (cx + r // 2 + L(1), cy - L(3)), (cx, cy - L(3))]

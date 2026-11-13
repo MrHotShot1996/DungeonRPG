@@ -23,7 +23,7 @@ CLASSES = {
         bolt=(255, 140, 210), bolt_kind='magic',
         palette=dict(armor=(240, 100, 170), trim=(212, 70, 145), legs=(125, 50, 95), helm=(255, 130, 190),
                      plume=None, head='hat', weapon='staff', orb=(255, 185, 235)),
-        abilities=['fireball', 'frost_nova', 'chain_lightning']),
+        abilities=['frozen_heart', 'flower_ring', 'chain_lightning']),
     'rogue': dict(
         name='Rogue', short='Rogue', title='The Rogue', color=(90, 200, 120),
         blurb='Super fast with sneaky tricks and lots of critical hits.',
@@ -60,7 +60,7 @@ CLASSES = {
         abilities=['summon_wolves', 'summon_hawk', 'summon_bear']),
     'monk': dict(
         name='Monk', short='Monk', title='The Monk', color=(255, 150, 70),
-        blurb='A fast martial artist. Marks a foe with a flying strike, then teleports in to finish them.',
+        blurb='A fast martial artist. Throws an orb that sticks to a foe, then launches in to finish them.',
         hp=62, dmg=10, speed=190, crit=0.14, atk='melee', atk_cd=0.3, reach=28, hitsize=58,
         dash_cd=0.75, potion_frac=0.40, growth=(9, 2), role='Mobile brawler',
         palette=dict(armor=(222, 142, 58), trim=(150, 90, 40), legs=(70, 55, 40), helm=(90, 60, 40),
@@ -77,10 +77,10 @@ ABILITIES = {
     'ground_slam': dict(name='Ground Slam', cd=12, color=(255, 170, 80), icon='slam',
                         desc='Smash the floor! Hurts and STUNS monsters nearby.'),
     # --- Mage
-    'fireball': dict(name='Fireball', cd=5, color=(255, 120, 40), icon='fire',
-                     desc='Throw a fireball that explodes when it hits.'),
-    'frost_nova': dict(name='Frost Nova', cd=10, color=(140, 210, 255), icon='snow',
-                       desc='A freezing blast that hurts and SLOWS monsters near you.'),
+    'frozen_heart': dict(name='Frozen Heart', cd=5, color=(255, 120, 185), icon='heart',
+                         desc='Throw a heart that hurts the first monster it hits and FREEZES it solid.'),
+    'flower_ring': dict(name='Flower Ring', cd=11, color=(255, 150, 200), icon='flower',
+                        desc='A ring of flowers spins around you for 6 seconds, hurting monsters it touches.'),
     'chain_lightning': dict(name='Chain Lightning', cd=9, color=(255, 240, 120), icon='bolt',
                             desc='Lightning that jumps between up to 5 monsters.'),
     # --- Rogue
@@ -113,8 +113,8 @@ ABILITIES = {
                         desc='A huge bear that stuns nearby monsters with a roar (max 1).'),
     # --- Monk
     'sky_strike': dict(name='Sky Strike', cd=6, color=(255, 235, 150), icon='fist',
-                       desc='Dash forward and strike the first monster you hit, marking it. '
-                            'Use again soon after to teleport to the mark and strike again!'),
+                       desc='Throw an orb that sticks to the first monster it hits (light damage). '
+                            'Use again within 4 seconds to LAUNCH yourself at it and strike hard!'),
     'tempest_kick': dict(name='Tempest Kick', cd=9, color=(255, 170, 90), icon='tempest',
                          desc='A spinning kick that hits and knocks back every monster around you.'),
     'dragons_kick': dict(name="Dragon's Kick", cd=13, color=(255, 120, 60), icon='kick',

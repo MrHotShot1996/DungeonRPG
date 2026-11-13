@@ -23,6 +23,8 @@ CORPSE_TO_MINION = {'slime': 'skeleton', 'bat': 'skeleton', 'goblin': 'skeleton'
 MINION_CAPS = {'undead': 8, 'army': 6, 'wolf': 4, 'hawk': 2, 'bear': 1}
 KNOCK_RESIST = {'boss': 0.2, 'warlord': 0.15, 'brute': 0.3}
 FLYERS = {'bat': 12, 'wraith': 8}                      # monsters that float above their shadow
+FREEZE_TIME = 2.5                                      # Ghala's Frozen Heart: seconds a monster stays frozen
+FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
 
 def spawn_weights(floor):
@@ -552,6 +554,18 @@ class Game:
                     self.damage_enemy(e, dmg, crit=crit, origin=(x, y), push=knock)
         return n
 
+    def freeze_enemy(self, e, secs):
+        """Freeze a monster solid. Bosses are too mighty to freeze - they get chilled (slowed) instead."""
+        if e.kind in BOSS_KINDS:
+            e.slow_t = max(e.slow_t, secs)
+            self.float_text(e.x, e.y - 40, "Chilled!", (170, 225, 255), big=True)
+        else:
+            e.freeze_t = max(e.freeze_t, secs)
+            self.float_text(e.x, e.y - 40, "FROZEN!", (170, 225, 255), big=True)
+        self.audio.play('frost')
+        self.shockwave(e.x, e.y, 46, (170, 225, 255))
+        self.burst(e.x, e.y, (200, 235, 255), 16, 150, glow=True)
+
     def hurt_around(self, x, y, radius, dmg):
         """Damage the player AND the player's allies inside a circle (used by bombs and slams)."""
         p = self.player
@@ -585,6 +599,8 @@ class Game:
         if p.sky_mark_enemy is e:
             p.sky_mark_enemy = None
             p.buffs.pop('sky_mark', None)
+        if p.launch is e:
+            p.launch, p.launch_t = None, 0.0
         p.kills += 1
         p.xp += e.xp
         self.audio.play('die')
@@ -746,7 +762,9 @@ class Game:
         if p.level < UNLOCK_LEVELS[slot]:
             self.float_text(p.x, p.y - 34, f"Unlocks at level {UNLOCK_LEVELS[slot]}", (210, 210, 210))
             return
-        if name == 'sky_strike' and p.buffs.get('sky_mark', 0) > 0 and p.sky_mark_enemy in self.enemies:
+        if p.launch_t > 0:                # already flying at the mark
+            return
+        if name == 'sky_strike' and self.sky_recast_ready():
             self.ab_sky_strike_recast()   # free follow-up, doesn't touch the cooldown
             return
         if p.ability_cd[slot] > 0:
@@ -755,6 +773,11 @@ class Game:
             return
         cd = ab['cd'] * p.cd_mult
         p.ability_cd[slot] = p.ability_max[slot] = cd
+
+    def sky_recast_ready(self):
+        """True while the Monk's orb is stuck to a living monster (so ability 1 will launch you at it)."""
+        p = self.player
+        return p.buffs.get('sky_mark', 0) > 0 and p.sky_mark_enemy in self.enemies
 
     def power(self, mult):
         p = self.player
@@ -768,19 +791,6 @@ class Game:
                 out.append((d, e))
         out.sort(key=lambda t: t[0])
         return [e for _, e in out[:count]]
-
-    def enemies_along_line(self, ox, oy, d, max_dist, width=46):
-        """Monsters within `width` of the ray from (ox,oy) along direction d, out to max_dist. Nearest first."""
-        hits = []
-        for e in self.enemies:
-            ex, ey = e.x - ox, e.y - oy
-            proj = ex * d.x + ey * d.y
-            if 0 <= proj <= max_dist:
-                perp = abs(ex * d.y - ey * d.x)
-                if perp <= width / 2 + e.w / 2:
-                    hits.append((proj, e))
-        hits.sort(key=lambda t: t[0])
-        return [e for _, e in hits]
 
     # -- Knight
     def ab_whirlwind(self):
@@ -806,19 +816,51 @@ class Game:
         self.burst(p.x, p.y, (180, 150, 120), 25, 220)
 
     # -- Mage
-    def ab_fireball(self):
+    def ab_frozen_heart(self):
+        """Throw a heart. The first monster it hits is hurt and frozen solid for a few seconds."""
         p = self.player
         d = self.aim_dir()
         p.face = V2(d)
-        self.audio.play('boom')
-        self.bolts.append(Bolt(p.x + d.x * 16, p.y + d.y * 16, d.x * 330, d.y * 330, self.power(2.4),
-                               (255, 120, 40), 10, 1.4, aoe=80, kind='fire'))
+        self.audio.play('cast')
+        self.bolts.append(Bolt(p.x + d.x * 16, p.y + d.y * 16, d.x * 380, d.y * 380, self.power(1.8),
+                               (255, 120, 185), 11, 1.3, kind='heart', freeze=FREEZE_TIME))
+        self.burst(p.x + d.x * 18, p.y + d.y * 18, (255, 170, 215), 8, 100, glow=True)
 
-    def ab_frost_nova(self):
+    def ab_flower_ring(self):
+        """A ring of flowers spins around you. update_flowers() below does the hurting."""
         p = self.player
-        self.audio.play('frost')
-        self.aoe(p.x, p.y, 170, self.power(1.0), knock=100, slow=3.5, color=(140, 210, 255))
-        self.burst(p.x, p.y, (200, 235, 255), 25, 200, glow=True)
+        p.buffs['flowers'] = FLOWER_TIME
+        self.audio.play('nova')
+        self.shockwave(p.x, p.y, FLOWER_RADIUS, (255, 150, 200))
+        self.burst(p.x, p.y, (255, 170, 215), 24, 190, glow=True)
+        self.float_text(p.x, p.y - 34, "Bloom!", (255, 170, 215), big=True)
+
+    def flower_spots(self):
+        """Where each flower of the ring is right now (world x, y). Empty when the ring isn't up."""
+        p = self.player
+        left = p.buffs.get('flowers', 0)
+        if left <= 0:
+            return []
+        grow = min(1.0, (FLOWER_TIME - left) / 0.25, left / 0.25)      # blooms out, then folds back in
+        r = FLOWER_RADIUS * (0.3 + 0.7 * grow)
+        return [(p.x + math.cos(self.t * 3.4 + k * 6.2832 / FLOWER_COUNT) * r,
+                 p.y + math.sin(self.t * 3.4 + k * 6.2832 / FLOWER_COUNT) * r) for k in range(FLOWER_COUNT)]
+
+    def update_flowers(self):
+        p = self.player
+        spots = self.flower_spots()
+        if not spots:
+            return
+        dmg = self.power(0.45)
+        for e in self.enemies[:]:
+            if e.petal_cd > 0:
+                continue
+            for fx, fy in spots:
+                if math.hypot(e.x - fx, e.y - fy) < e.w / 2 + 15:
+                    e.petal_cd = 0.5
+                    self.burst(fx, fy, (255, 170, 215), 5, 110, glow=True)
+                    self.damage_enemy(e, dmg, origin=(p.x, p.y), push=150)
+                    break
 
     def ab_chain_lightning(self):
         p = self.player
@@ -983,34 +1025,19 @@ class Game:
 
     # -- Monk
     def ab_sky_strike(self):
-        """The first half of Sky Strike: dash forward and hit (and mark) the first monster in the way."""
+        """The first half of Sky Strike: throw a ball of force. It marks (and lightly hurts) the first
+        monster it hits, but doesn't move you - that's what the recast below is for."""
         p = self.player
         d = self.aim_dir()
         p.face = V2(d)
-        max_dist = 240
-        hits = self.enemies_along_line(p.x, p.y, d, max_dist)
-        self.audio.play('dash')
-        land = (p.x, p.y)
-        for i in range(1, 13):
-            tx, ty = p.x + d.x * (max_dist * i / 12), p.y + d.y * (max_dist * i / 12)
-            rc = pygame.Rect(int(tx - p.w / 2), int(ty - p.h / 2), p.w, p.h)
-            if self.dungeon.hits_wall(rc):
-                break
-            land = (tx, ty)
-        self.burst(p.x, p.y, (255, 235, 150), 14, 160, glow=True)
-        p.x, p.y = land
-        p.invuln = max(p.invuln, 0.2)
-        self.burst(p.x, p.y, (255, 235, 150), 14, 160, glow=True)
-        if hits:
-            e = hits[0]
-            self.damage_enemy(e, self.power(1.6), origin=(p.x, p.y))
-            if e in self.enemies:   # only mark it if the hit didn't kill it outright
-                p.sky_mark_enemy = e
-                p.buffs['sky_mark'] = 4.0
-                self.float_text(e.x, e.y - 40, "MARKED!", (255, 210, 90), big=True)
+        self.audio.play('shoot')
+        self.bolts.append(Bolt(p.x + d.x * 16, p.y + d.y * 16, d.x * 540, d.y * 540, self.power(0.8),
+                               (255, 235, 150), 9, 0.75, kind='orb', mark=True))
+        self.burst(p.x + d.x * 18, p.y + d.y * 18, (255, 235, 150), 6, 90, glow=True)
 
     def ab_sky_strike_recast(self):
-        """The follow-up: teleport to the marked monster and strike it again. Costs no extra cooldown."""
+        """The follow-up: LAUNCH yourself at the marked monster. Player.fly_to_mark() does the flying and
+        calls sky_strike_land() below when you arrive. Costs no extra cooldown."""
         p = self.player
         e = p.sky_mark_enemy
         p.sky_mark_enemy = None
@@ -1018,23 +1045,23 @@ class Game:
         if e is None or e not in self.enemies:
             self.float_text(p.x, p.y - 30, "Target lost!", (200, 200, 200))
             return
-        back = V2(p.x - e.x, p.y - e.y)
-        back = back.normalize() if back.length_squared() else V2(0, 1)
-        spot = None
-        for ang in (0, 90, -90, 180):
-            v = back.rotate(ang) * (e.w / 2 + 22)
-            tx, ty = e.x + v.x, e.y + v.y
-            rc = pygame.Rect(int(tx - p.w / 2), int(ty - p.h / 2), p.w, p.h)
-            if not self.dungeon.hits_wall(rc):
-                spot = (tx, ty)
-                break
+        p.launch, p.launch_t = e, 0.8
+        p.dash_t = 0.0
+        p.invuln = max(p.invuln, 0.2)
+        self.audio.play('dash')
         self.audio.play('warp')
+        self.shockwave(p.x, p.y, 40, (255, 235, 150))
         self.burst(p.x, p.y, (255, 235, 150), 16, 150, glow=True)
-        p.x, p.y = spot if spot else (p.x, p.y)
+
+    def sky_strike_land(self, e):
+        p = self.player
         p.invuln = max(p.invuln, 0.4)
-        if e.x != p.x or e.y != p.y:
-            p.face = V2(e.x - p.x, e.y - p.y).normalize()
-        self.burst(p.x, p.y, (255, 235, 150), 16, 150, glow=True)
+        p.swing = 0.16
+        self.audio.play('slam')
+        self.shake = max(self.shake, 0.3)
+        self.rumble(0.7, 220)
+        self.shockwave(e.x, e.y, 60, (255, 235, 150))
+        self.burst(e.x, e.y, (255, 235, 150), 20, 220, glow=True)
         self.damage_enemy(e, self.power(2.2), crit=True, origin=(p.x, p.y))
 
     def ab_tempest_kick(self):
@@ -1160,13 +1187,14 @@ class Game:
                 return
             p = self.player
             self.run_time += dt
-            if p.dash_t > 0:
+            if p.dash_t > 0 or p.launch_t > 0:
                 self.trail.append([p.x, p.y, p.dir_name, 0.22])
             for tr in self.trail[:]:
                 tr[3] -= dt
                 if tr[3] <= 0:
                     self.trail.remove(tr)
             p.update(dt, self.input, self)
+            self.update_flowers()
             for e in self.enemies[:]:
                 if e in self.enemies:
                     e.update(dt, self)
@@ -1580,6 +1608,8 @@ class Game:
             tint = (170, 170, 170)
         elif o.warn and int(self.t * 14) % 2 == 0:
             tint = (210, 40, 40)
+        elif o.freeze_t > 0:
+            tint = (70, 130, 190)
         elif o.slow_t > 0:
             tint = (0, 50, 120)
         elif o.poison_t > 0:
@@ -1605,10 +1635,40 @@ class Game:
             self.text("ELITE", 18, (255, 220, 90), (sx, top - 12), center=True, outline=True)
         if o.warn:
             self.text("!", 44, (255, 70, 70), (sx, top - 8), center=True, outline=True)
+        if o.freeze_t > 0:                                   # a block of ice with a little heart on it
+            iw, ih = img.get_width() + 8, img.get_height() + 6
+            ice = pygame.Surface((iw, ih), pygame.SRCALPHA)
+            pygame.draw.rect(ice, (150, 215, 255, 95), (0, 0, iw, ih), border_radius=8)
+            pygame.draw.rect(ice, (225, 245, 255, 220), (0, 0, iw, ih), 2, border_radius=8)
+            pygame.draw.line(ice, (255, 255, 255, 200), (6, ih - 8), (iw // 3, 6), 2)
+            if o.freeze_t < 0.6 and int(self.t * 16) % 2:    # flickers just before it thaws
+                ice.set_alpha(110)
+            scr.blit(ice, (int(sx - iw // 2), int(top - 3)))
+            self.draw_heart(sx, int(top - 12), 6, (255, 150, 200))
+            self.add_glow(sx, sy, 60, (150, 215, 255), 0.7)
+        if self.player.sky_mark_enemy is o and self.sky_recast_ready():   # the Monk's orb, stuck to it
+            for k in range(2):
+                a = self.t * 5 + k * math.pi
+                ox, oy = int(sx + math.cos(a) * (o.w * 0.5 + 12)), int(sy - 4 + math.sin(a) * (o.w * 0.25 + 6))
+                pygame.draw.circle(scr, (255, 235, 150), (ox, oy), 5)
+                pygame.draw.circle(scr, (255, 255, 235), (ox, oy), 2)
+                self.add_glow(ox, oy, 26, (255, 235, 150), 0.9)
+            pygame.draw.circle(scr, (255, 235, 150), (sx, int(top - 14)), 7)
+            pygame.draw.circle(scr, (255, 255, 235), (sx, int(top - 14)), 4)
+            self.add_glow(sx, int(top - 14), 34, (255, 235, 150), 1.0)
         if o.stun_t > 0:
             for k in range(3):
                 a = self.t * 6 + k * 2.1
                 pygame.draw.circle(scr, (255, 235, 90), (int(sx + math.cos(a) * 12), int(top + 6 + math.sin(a) * 4)), 3)
+
+    def draw_heart(self, sx, sy, r, color):
+        """A little heart centred on (sx, sy); r is roughly half its width."""
+        scr = self.screen
+        k = max(2, int(r * 0.58))
+        for col, g in (((255, 255, 255), 2), (color, 0)):
+            pygame.draw.circle(scr, col, (sx - k, sy - k // 2), k + g)
+            pygame.draw.circle(scr, col, (sx + k, sy - k // 2), k + g)
+            pygame.draw.polygon(scr, col, [(sx - 2 * k - g, sy), (sx, sy + int(r * 1.25) + g * 2), (sx + 2 * k + g, sy)])
 
     def draw_minion(self, m, cx, cy):
         sp, scr = self.sprites, self.screen
@@ -1704,7 +1764,7 @@ class Game:
             if sx < -90 or sx > WIDTH + 90 or sy < -90 or sy > HEIGHT + 90:
                 continue
             if o is p:
-                if p.invuln > 0 and int(t * 20) % 2 == 0 and p.dash_t <= 0:
+                if p.invuln > 0 and int(t * 20) % 2 == 0 and p.dash_t <= 0 and p.launch_t <= 0:
                     continue
                 img = sp.player[(p.cls, p.dir_name, int(p.anim * 8) % 2 if p.moving else 0)]
                 bob = int(1.6 * math.sin(p.anim * 16)) if p.moving else int(1.2 * math.sin(t * 2.5))
@@ -1785,12 +1845,40 @@ class Game:
                 pygame.draw.line(scr, b.color, (sx, sy), (sx - ux * ln, sy - uy * ln), 3)
                 pygame.draw.circle(scr, (255, 255, 255), (sx, sy), 2)
                 self.add_glow(sx, sy, 26, b.color, 0.6)
+            elif b.kind == 'heart':
+                self.draw_heart(sx, sy - 3, b.radius + int(1.5 * math.sin(t * 22)), b.color)
+                self.add_glow(sx, sy, 56, (170, 225, 255), 1.0)
+                lights.append((b.x, b.y, 100, b.color, 0.6, 0.55))
+            elif b.kind == 'orb':
+                pygame.draw.circle(scr, b.color, (sx, sy), b.radius)
+                pygame.draw.circle(scr, (255, 255, 240), (sx, sy), b.radius - 4)
+                a = t * 16
+                pygame.draw.circle(scr, (255, 255, 255), (int(sx + math.cos(a) * (b.radius + 4)),
+                                                          int(sy + math.sin(a) * (b.radius + 4))), 2)
+                pygame.draw.circle(scr, (255, 200, 110), (sx, sy), b.radius + 4, 2)
+                self.add_glow(sx, sy, 60, b.color, 1.2)
+                lights.append((b.x, b.y, 110, b.color, 0.6, 0.55))
             else:
                 rad = b.radius + (int(2 * math.sin(t * 30)) if b.kind == 'fire' else 0)
                 pygame.draw.circle(scr, b.color, (sx, sy), rad)
                 pygame.draw.circle(scr, (255, 255, 230), (sx, sy), max(1, rad - 3))
                 self.add_glow(sx, sy, 60 if b.kind == 'fire' else 40, b.color, 1.1)
                 lights.append((b.x, b.y, 110 if b.kind == 'fire' else 70, b.color, 0.6, 0.55))
+        for i, (fx, fy) in enumerate(self.flower_spots()):                   # Ghala's Flower Ring
+            sx, sy = int(fx - cx), int(fy - cy)
+            spin = -t * 5 + i
+            for j in range(5):
+                a = spin + j * 1.2566
+                px, py = int(sx + math.cos(a) * 7), int(sy + math.sin(a) * 7)
+                pygame.draw.circle(scr, (255, 255, 255), (px, py), 6)
+                pygame.draw.circle(scr, (255, 130, 195) if i % 2 else (255, 175, 220), (px, py), 5)
+            pygame.draw.circle(scr, (255, 225, 100), (sx, sy), 4)
+            self.add_glow(sx, sy, 34, (255, 150, 200), 0.9)
+            if random.random() < 0.25:
+                self.particles.append(Particle(fx, fy, random.uniform(-25, 25), random.uniform(-25, 25),
+                                               0.4, (255, 190, 225), 3, glow=True))
+        if p.buffs.get('flowers', 0) > 0:
+            lights.append((p.x, p.y, 150, (255, 150, 200), 0.3, 0.35))
         for pa in self.particles:
             sx, sy = int(pa.x - cx), int(pa.y - cy)
             k = max(0.0, pa.life / pa.max_life)
@@ -2054,8 +2142,11 @@ class Game:
         for i in range(3):
             ab = ABILITIES[names[i]]
             locked = UNLOCK_LEVELS[i] if p.level < UNLOCK_LEVELS[i] else None
-            self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'], p.ability_cd[i], p.ability_max[i],
-                           f'ability{i + 1}', locked)
+            recast = names[i] == 'sky_strike' and self.sky_recast_ready()      # orb is stuck: press again!
+            self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'],
+                           0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked)
+            if recast and int(self.t * 6) % 2:
+                pygame.draw.rect(scr, (255, 255, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
         sx = x0 + 3 * 76 + 14
         pygame.draw.line(scr, (110, 96, 70), (sx - 10, y0 + 6), (sx - 10, y0 + 60), 2)
         self.draw_slot(sx, y0, 66, self.ui['potion_big'], (255, 120, 150), 0, 1, "potion", dim=(p.potions == 0 or p.hp >= p.max_hp), count=p.potions)
