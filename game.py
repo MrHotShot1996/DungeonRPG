@@ -23,7 +23,8 @@ CORPSE_TO_MINION = {'slime': 'skeleton', 'bat': 'skeleton', 'goblin': 'skeleton'
 MINION_CAPS = {'undead': 8, 'army': 6, 'wolf': 4, 'hawk': 2, 'bear': 1}
 KNOCK_RESIST = {'boss': 0.2, 'warlord': 0.15, 'brute': 0.3}
 FLYERS = {'bat': 12, 'wraith': 8}                      # monsters that float above their shadow
-FREEZE_TIME = 2.5                                      # Ghala's Frozen Heart: seconds a monster stays frozen
+SKY_STRIKE_REFUND = 0.5                                # Monk: landing the jump leaves this much of the cooldown
+FREEZE_TIME = 2.5                                    # Ghala's Frozen Heart: seconds a monster stays frozen
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
 
@@ -1063,6 +1064,11 @@ class Game:
         self.shockwave(e.x, e.y, 60, (255, 235, 150))
         self.burst(e.x, e.y, (255, 235, 150), 20, 220, glow=True)
         self.damage_enemy(e, self.power(2.2), crit=True, origin=(p.x, p.y))
+        # reward for landing the orb AND the jump: the rest of Sky Strike's cooldown is cut down
+        slot = CLASSES[p.cls]['abilities'].index('sky_strike')
+        if p.ability_cd[slot] > 0:
+            p.ability_cd[slot] *= SKY_STRIKE_REFUND
+            self.float_text(p.x, p.y - 44, "Cooldown cut!", (255, 235, 150))
 
     def ab_tempest_kick(self):
         p = self.player

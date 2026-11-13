@@ -114,7 +114,8 @@ ABILITIES = {
     # --- Monk
     'sky_strike': dict(name='Sky Strike', cd=6, color=(255, 235, 150), icon='fist',
                        desc='Throw an orb that sticks to the first monster it hits (light damage). '
-                            'Use again within 4 seconds to LAUNCH yourself at it and strike hard!'),
+                            'Use again within 4 seconds to LAUNCH yourself at it and strike hard - '
+                            'landing the jump cuts the cooldown in half!'),
     'tempest_kick': dict(name='Tempest Kick', cd=9, color=(255, 170, 90), icon='tempest',
                          desc='A spinning kick that hits and knocks back every monster around you.'),
     'dragons_kick': dict(name="Dragon's Kick", cd=13, color=(255, 120, 60), icon='kick',
