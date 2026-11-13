@@ -4,7 +4,7 @@ Want a new class? Copy one of the entries below and change the numbers!
 growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."""
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'cleric', 'necromancer', 'beastmaster']
+CLASS_ORDER = ['knight', 'mage', 'rogue', 'cleric', 'necromancer', 'beastmaster', 'monk']
 
 CLASSES = {
     'knight': dict(
@@ -58,6 +58,14 @@ CLASSES = {
         palette=dict(armor=(150, 100, 60), trim=(115, 78, 46), legs=(85, 64, 48), helm=(96, 134, 72),
                      plume=None, head='hood', weapon='bow', collar=(235, 225, 200), feather=(220, 70, 60)),
         abilities=['summon_wolves', 'summon_hawk', 'summon_bear']),
+    'monk': dict(
+        name='Monk', short='Monk', title='The Monk', color=(255, 150, 70),
+        blurb='A fast martial artist. Marks a foe with a flying strike, then teleports in to finish them.',
+        hp=62, dmg=10, speed=190, crit=0.14, atk='melee', atk_cd=0.3, reach=28, hitsize=58,
+        dash_cd=0.75, potion_frac=0.40, growth=(9, 2), role='Mobile brawler',
+        palette=dict(armor=(222, 142, 58), trim=(150, 90, 40), legs=(70, 55, 40), helm=(90, 60, 40),
+                     plume=(205, 55, 45), head='hood', weapon='fists', robe=True, wraps=(235, 225, 205)),
+        abilities=['sky_strike', 'tempest_kick', 'dragons_kick']),
 }
 
 ABILITIES = {
@@ -103,4 +111,12 @@ ABILITIES = {
                         desc='A hawk that dive-bombs monsters from above (max 2).'),
     'summon_bear': dict(name='Summon Bear', cd=22, color=(205, 140, 80), icon='bear',
                         desc='A huge bear that stuns nearby monsters with a roar (max 1).'),
+    # --- Monk
+    'sky_strike': dict(name='Sky Strike', cd=6, color=(255, 235, 150), icon='fist',
+                       desc='Dash forward and strike the first monster you hit, marking it. '
+                            'Use again soon after to teleport to the mark and strike again!'),
+    'tempest_kick': dict(name='Tempest Kick', cd=9, color=(255, 170, 90), icon='tempest',
+                         desc='A spinning kick that hits and knocks back every monster around you.'),
+    'dragons_kick': dict(name="Dragon's Kick", cd=13, color=(255, 120, 60), icon='kick',
+                        desc='Grab the nearest monster and kick it away hard, blasting anything it crashes into.'),
 }

@@ -6,10 +6,16 @@
 3. Run:  `python main.py`   (Mac/Linux: `python3 main.py`)
    - If pygame is missing, main.py installs it for you automatically.
 
-## Pick your hero (6 classes, 10 floors)
-Knight, Ghala the Mage (pink!), Rogue, Cleric, Necromancer (raises the dead), Beastmaster (calls beasts).
+## Pick your hero (7 classes, 10 floors)
+Knight, Ghala the Mage (pink!), Rogue, Cleric, Necromancer (raises the dead), Beastmaster (calls beasts),
+Monk (fast martial artist - marks a monster with a flying strike, then teleports in to finish them).
 Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
 Floors 5 and 10 have bosses. Hold the Stats button to see your numbers.
+
+## The Shop
+Every time you take the stairs to a new floor, the Shop opens so you can spend the gold you picked up:
+more potions, permanent +HP/+damage/+speed upgrades. Prices go up a little each floor. You can also open
+it anytime from the Pause menu, and leave empty-handed if you'd rather save your gold.
 
 ## Keyboard controls (default)
 | Key | What it does |
@@ -57,10 +63,11 @@ The pad vibrates when you get hit, dash, or use big attacks (you can turn this o
 On-screen hints switch between keyboard keys and PlayStation symbols automatically,
 depending on which one you touched last.
 
-## Changing the music
+## Changing the music and volume
 Title screen -> **Music** (or Pause -> Music). Pick from 4 tunes (Catacombs, War March, Moonlit Keep,
 Goblin's Jig) or **No Music** to turn the background music off while keeping sound effects on.
-Your choice is saved in `audio.json`.
+The same screen has a Music Volume and an SFX Volume slider (Left/Right to adjust).
+Your choices are saved in `audio.json`.
 
 ## Changing the controls
 Title screen -> **Controls** (or Pause -> Controls). Three tabs:

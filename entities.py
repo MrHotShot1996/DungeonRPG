@@ -56,6 +56,7 @@ class Player(Entity):
         self.ability_cd = [0.0, 0.0, 0.0]
         self.ability_max = [1.0, 1.0, 1.0]
         self.buffs = {}
+        self.sky_mark_enemy = None   # Monk's Sky Strike mark, used for the teleport recast
         self.slow_t = 0.0
         self.spin = 0.0
         self.hurt_flash = 0.0

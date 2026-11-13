@@ -531,12 +531,14 @@ class Game:
             self.kill_enemy(e)
 
     def aoe(self, x, y, radius, dmg, knock=250, stun=0.0, slow=0.0, poison=0.0, poison_t=0.0,
-            color=(255, 255, 255), crit=False, ring=True):
+            color=(255, 255, 255), crit=False, ring=True, exclude=None):
         """Hurt (and maybe stun/slow/poison) every monster inside a circle."""
         if ring:
             self.shockwave(x, y, radius, color)
         n = 0
         for e in self.enemies[:]:
+            if exclude and e in exclude:
+                continue
             if math.hypot(e.x - x, e.y - y) <= radius + e.w / 2:
                 n += 1
                 e.awake = True
@@ -580,6 +582,9 @@ class Game:
         if e in self.enemies:
             self.enemies.remove(e)
         p = self.player
+        if p.sky_mark_enemy is e:
+            p.sky_mark_enemy = None
+            p.buffs.pop('sky_mark', None)
         p.kills += 1
         p.xp += e.xp
         self.audio.play('die')
@@ -681,6 +686,7 @@ class Game:
             self.floor += 1
             p.hp = min(p.max_hp, p.hp + int(p.max_hp * 0.2))
             self.build_floor()
+            self.open_shop('playing')
 
     # ------------------------------------------------------------ ALLIES (minions)
     def count_group(self, g):
@@ -740,6 +746,9 @@ class Game:
         if p.level < UNLOCK_LEVELS[slot]:
             self.float_text(p.x, p.y - 34, f"Unlocks at level {UNLOCK_LEVELS[slot]}", (210, 210, 210))
             return
+        if name == 'sky_strike' and p.buffs.get('sky_mark', 0) > 0 and p.sky_mark_enemy in self.enemies:
+            self.ab_sky_strike_recast()   # free follow-up, doesn't touch the cooldown
+            return
         if p.ability_cd[slot] > 0:
             return
         if getattr(self, 'ab_' + name)() is False:
@@ -759,6 +768,19 @@ class Game:
                 out.append((d, e))
         out.sort(key=lambda t: t[0])
         return [e for _, e in out[:count]]
+
+    def enemies_along_line(self, ox, oy, d, max_dist, width=46):
+        """Monsters within `width` of the ray from (ox,oy) along direction d, out to max_dist. Nearest first."""
+        hits = []
+        for e in self.enemies:
+            ex, ey = e.x - ox, e.y - oy
+            proj = ex * d.x + ey * d.y
+            if 0 <= proj <= max_dist:
+                perp = abs(ex * d.y - ey * d.x)
+                if perp <= width / 2 + e.w / 2:
+                    hits.append((proj, e))
+        hits.sort(key=lambda t: t[0])
+        return [e for _, e in hits]
 
     # -- Knight
     def ab_whirlwind(self):
@@ -959,6 +981,84 @@ class Game:
         self.shake = max(self.shake, 0.3)
         self.aoe(p.x, p.y, 170, 0, knock=190, stun=1.2, color=(235, 190, 120))
 
+    # -- Monk
+    def ab_sky_strike(self):
+        """The first half of Sky Strike: dash forward and hit (and mark) the first monster in the way."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        max_dist = 240
+        hits = self.enemies_along_line(p.x, p.y, d, max_dist)
+        self.audio.play('dash')
+        land = (p.x, p.y)
+        for i in range(1, 13):
+            tx, ty = p.x + d.x * (max_dist * i / 12), p.y + d.y * (max_dist * i / 12)
+            rc = pygame.Rect(int(tx - p.w / 2), int(ty - p.h / 2), p.w, p.h)
+            if self.dungeon.hits_wall(rc):
+                break
+            land = (tx, ty)
+        self.burst(p.x, p.y, (255, 235, 150), 14, 160, glow=True)
+        p.x, p.y = land
+        p.invuln = max(p.invuln, 0.2)
+        self.burst(p.x, p.y, (255, 235, 150), 14, 160, glow=True)
+        if hits:
+            e = hits[0]
+            self.damage_enemy(e, self.power(1.6), origin=(p.x, p.y))
+            if e in self.enemies:   # only mark it if the hit didn't kill it outright
+                p.sky_mark_enemy = e
+                p.buffs['sky_mark'] = 4.0
+                self.float_text(e.x, e.y - 40, "MARKED!", (255, 210, 90), big=True)
+
+    def ab_sky_strike_recast(self):
+        """The follow-up: teleport to the marked monster and strike it again. Costs no extra cooldown."""
+        p = self.player
+        e = p.sky_mark_enemy
+        p.sky_mark_enemy = None
+        p.buffs.pop('sky_mark', None)
+        if e is None or e not in self.enemies:
+            self.float_text(p.x, p.y - 30, "Target lost!", (200, 200, 200))
+            return
+        back = V2(p.x - e.x, p.y - e.y)
+        back = back.normalize() if back.length_squared() else V2(0, 1)
+        spot = None
+        for ang in (0, 90, -90, 180):
+            v = back.rotate(ang) * (e.w / 2 + 22)
+            tx, ty = e.x + v.x, e.y + v.y
+            rc = pygame.Rect(int(tx - p.w / 2), int(ty - p.h / 2), p.w, p.h)
+            if not self.dungeon.hits_wall(rc):
+                spot = (tx, ty)
+                break
+        self.audio.play('warp')
+        self.burst(p.x, p.y, (255, 235, 150), 16, 150, glow=True)
+        p.x, p.y = spot if spot else (p.x, p.y)
+        p.invuln = max(p.invuln, 0.4)
+        if e.x != p.x or e.y != p.y:
+            p.face = V2(e.x - p.x, e.y - p.y).normalize()
+        self.burst(p.x, p.y, (255, 235, 150), 16, 150, glow=True)
+        self.damage_enemy(e, self.power(2.2), crit=True, origin=(p.x, p.y))
+
+    def ab_tempest_kick(self):
+        p = self.player
+        p.spin = 0.4
+        self.audio.play('whirl')
+        self.aoe(p.x, p.y, 130, self.power(1.8), knock=430, stun=0.3, color=(255, 170, 90))
+        self.burst(p.x, p.y, (255, 190, 110), 22, 220, glow=True)
+
+    def ab_dragons_kick(self):
+        p = self.player
+        targets = self.nearest_enemies(p.x, p.y, 130, 1)
+        if not targets:
+            self.float_text(p.x, p.y - 30, "No target!", (200, 200, 200))
+            return False
+        e = targets[0]
+        self.audio.play('slam')
+        self.shake = max(self.shake, 0.5)
+        self.rumble(0.8, 300)
+        self.damage_enemy(e, self.power(2.6), crit=True, origin=(p.x, p.y), push=620)
+        self.burst(e.x, e.y, (255, 140, 60), 20, 220, glow=True)
+        # the kicked monster bowls into anything else nearby, like a wrecking ball
+        self.aoe(e.x, e.y, 90, self.power(1.0), knock=320, ring=False, color=(255, 150, 70), exclude=(e,))
+
     # ------------------------------------------------------------ updating
     def update_items(self, dt):
         p = self.player
@@ -1106,8 +1206,9 @@ class Game:
                 ("CONTROLS", lambda: self.open_controls('title')), ("QUIT", self.quit_game)]
 
     def pause_items(self):
-        return [("RESUME", self.resume), ("MUSIC", lambda: self.open_music('paused')),
-                ("CONTROLS", lambda: self.open_controls('paused')), ("QUIT TO TITLE", self.go_title)]
+        return [("RESUME", self.resume), ("SHOP", lambda: self.open_shop('paused')),
+                ("MUSIC", lambda: self.open_music('paused')), ("CONTROLS", lambda: self.open_controls('paused')),
+                ("QUIT TO TITLE", self.go_title)]
 
     def menu_items(self):
         if self.state == 'title':
@@ -1116,7 +1217,14 @@ class Game:
             return self.pause_items()
         if self.state == 'music':
             return self.music_items()
+        if self.state == 'shop':
+            return self.shop_items()
         return []
+
+    def select_item_index(self, items, label):
+        """Finds `label`'s position in `items` (0 if missing) - avoids hardcoding menu-row numbers that shift
+        whenever an entry is added or reordered."""
+        return next((i for i, (lab, _) in enumerate(items) if lab == label), 0)
 
     def go_select(self):
         self.audio.play('select')
@@ -1144,11 +1252,13 @@ class Game:
     def close_controls(self):
         self.audio.play('select')
         self.state = self.return_state
-        self.menu_sel = 2
+        self.menu_sel = self.select_item_index(self.menu_items(), "CONTROLS")
 
-    # ------------------------------------------------------------ the MUSIC screen
+    # ------------------------------------------------------------ the MUSIC screen (tracks + volume)
     def music_items(self):
         items = [(rec['name'], (lambda k=rec['key']: self.choose_track(k))) for rec in MUSIC_TRACKS]
+        items.append(("Music Volume", lambda: None))   # sliders: left/right adjust, click just selects
+        items.append(("SFX Volume", lambda: None))
         items.append(("BACK", self.close_music))
         return items
 
@@ -1161,7 +1271,7 @@ class Game:
     def close_music(self):
         self.audio.play('select')
         self.state = self.return_state
-        self.menu_sel = 1
+        self.menu_sel = self.select_item_index(self.menu_items(), "MUSIC")
 
     def choose_track(self, key):
         self.audio.set_track(key)
@@ -1170,10 +1280,74 @@ class Game:
         self.toast(f"Music: {name}", (170, 230, 255))
 
     def music_input(self):
-        if self.input.nav('back'):
+        inp = self.input
+        if inp.nav('back'):
             self.close_music()
+            return
+        n_tracks = len(MUSIC_TRACKS)
+        if inp.nav('left') or inp.nav('right'):
+            d = -1 if inp.nav('left') else 1
+            if self.menu_sel == n_tracks:
+                self.audio.set_music_vol(self.audio.music_vol + 0.1 * d)
+            elif self.menu_sel == n_tracks + 1:
+                self.audio.set_sfx_vol(self.audio.sfx_vol + 0.1 * d)
+                self.audio.play('select')
+        self.menu_input(self.music_items())
+
+    # ------------------------------------------------------------ the SHOP screen
+    def shop_offers(self):
+        f = self.floor
+        return [
+            ('potion', 'Potion', 'Carry one more healing potion', 15 + f * 2),
+            ('hp', 'Vitality Elixir', '+15 max HP, heals it now', 35 + f * 5),
+            ('dmg', 'Whetstone', '+2 damage, forever', 35 + f * 5),
+            ('speed', 'Swift Boots', '+8 speed, forever', 30 + f * 4),
+        ]
+
+    def shop_items(self):
+        items = [(f"{name}  -  {cost}g", (lambda k=key, c=cost: self.buy_shop_item(k, c)))
+                 for key, name, desc, cost in self.shop_offers()]
+        items.append(("LEAVE SHOP", self.close_shop))
+        return items
+
+    def open_shop(self, back_to):
+        self.audio.play('select')
+        self.return_state = back_to
+        self.state = 'shop'
+        self.menu_sel = 0
+
+    def close_shop(self):
+        self.audio.play('select')
+        self.state = self.return_state
+        self.menu_sel = self.select_item_index(self.menu_items(), "SHOP")
+
+    def buy_shop_item(self, key, cost):
+        p = self.player
+        if p.gold < cost:
+            self.audio.play('deflect')
+            self.toast("Not enough gold!", (255, 160, 140))
+            return
+        p.gold -= cost
+        self.audio.play('coin')
+        if key == 'potion':
+            p.potions += 1
+            self.toast("+1 Potion", (255, 180, 200))
+        elif key == 'hp':
+            p.max_hp += 15
+            p.hp = min(p.max_hp, p.hp + 15)
+            self.toast("+15 Max HP", (255, 120, 140))
+        elif key == 'dmg':
+            p.dmg += 2
+            self.toast("+2 Damage", (255, 190, 110))
+        elif key == 'speed':
+            p.speed += 8
+            self.toast("+8 Speed", (150, 220, 255))
+
+    def shop_input(self):
+        if self.input.nav('back'):
+            self.close_shop()
         else:
-            self.menu_input(self.music_items())
+            self.menu_input(self.shop_items())
 
     def menu_input(self, items):
         inp = self.input
@@ -1308,13 +1482,19 @@ class Game:
             self.controls_input()
         elif st == 'music':
             self.music_input()
+        elif st == 'shop':
+            self.shop_input()
         elif st in ('dead', 'victory'):
             if inp.nav('confirm'):
                 self.go_title()
 
     # ------------------------------------------------------------ mouse & window events
     def select_rects(self):
-        return [pygame.Rect(29 + i * 206, 92, 192, 392) for i in range(len(CLASS_ORDER))]
+        n = len(CLASS_ORDER)
+        margin, gap = 14, 10
+        spacing = (WIDTH - 2 * margin) // n
+        card_w = spacing - gap
+        return [pygame.Rect(margin + i * spacing, 92, card_w, 392) for i in range(n)]
 
     def mouse_hover(self, pos):
         if self.state == 'select':
@@ -1968,8 +2148,8 @@ class Game:
             f = int(self.t * 3 + i) % 2
             img = self.sprites.player[(cls, 'down', f)]
             big = pygame.transform.scale(img, (img.get_width() * 2, img.get_height() * 2))
-            x = WIDTH // 2 + (i - 2.5) * 158
-            fy = 640 + int(2 * math.sin(self.t * 2 + i))
+            x = WIDTH // 2 + (i - (len(CLASS_ORDER) - 1) / 2) * 158
+            fy = 695 + int(2 * math.sin(self.t * 2 + i))
             sh = self.sprites.shadow(110, 34)
             scr.blit(sh, (int(x - sh.get_width() / 2), fy - 16))
             scr.blit(big, (int(x - big.get_width() / 2), fy + self.sprites.foot[('p', cls)] * 2 - big.get_height()))
@@ -1977,10 +2157,12 @@ class Game:
         self.add_glow_screen(WIDTH // 2, 190 + bob, 360, (255, 190, 80), 0.28)
         self.text("ECHOES OF THE", 62, (205, 195, 240), (WIDTH // 2, 92 + bob), center=True, outline=True)
         self.text("BONE KING", 168, (255, 214, 90), (WIDTH // 2, 190 + bob), center=True, outline=True)
-        self.text("A DUNGEON RPG  -  10 FLOORS  -  6 HEROES", 30, (190, 190, 220), (WIDTH // 2, 284), center=True, outline=True)
-        self.draw_menu(self.title_items(), WIDTH // 2, 322)
+        self.text(f"A DUNGEON RPG  -  10 FLOORS  -  {len(CLASS_ORDER)} HEROES", 30, (190, 190, 220), (WIDTH // 2, 284), center=True, outline=True)
+        items = self.title_items()
+        self.draw_menu(items, WIDTH // 2, 322)
+        menu_bottom = 322 + (len(items) - 1) * 62 + 52   # draw_menu's default row height(52) + gap(10)
         how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
-        self.draw_inline([how, ('nav', 'confirm'), " to choose"], WIDTH // 2, 514, 24)
+        self.draw_inline([how, ('nav', 'confirm'), " to choose"], WIDTH // 2, menu_bottom + 26, 24)
         self.draw_pad_status(18, 16)
 
     def add_glow_screen(self, x, y, r, color, intensity):
@@ -2210,22 +2392,62 @@ class Game:
     def draw_music(self):
         self.lit_backdrop([(WIDTH // 2, 300, 500, 0.5)])
         self.dim((0, 0, 10), 70)
-        self.text("BACKGROUND MUSIC", 56, (255, 214, 90), (WIDTH // 2, 76), center=True, outline=True)
-        self.text("Pick the tune that plays while you explore", 24, (190, 190, 220), (WIDTH // 2, 124), center=True)
+        self.text("BACKGROUND MUSIC", 56, (255, 214, 90), (WIDTH // 2, 68), center=True, outline=True)
+        self.text("Pick a tune, or adjust the volume", 22, (190, 190, 220), (WIDTH // 2, 112), center=True)
         items = self.music_items()
-        y0 = 172
+        n_tracks = len(MUSIC_TRACKS)
+        y0, rh, gap = 148, 54, 8
         for i, (label, _) in enumerate(items):
-            r = pygame.Rect(WIDTH // 2 - 230, y0 + i * 62, 460, 52)
+            r = pygame.Rect(WIDTH // 2 - 240, y0 + i * (rh + gap), 480, rh)
             sel = i == self.menu_sel
-            playing = i < len(MUSIC_TRACKS) and MUSIC_TRACKS[i]['key'] == self.audio.track_key
             self.panel(r, alpha=235 if sel else 200, border=(255, 214, 90) if sel else (110, 100, 130), radius=12,
                        glow=(255, 214, 90) if sel else None)
-            shown = ("NOW PLAYING: " if playing else "") + label
-            self.text(shown, 30, (255, 255, 255) if sel else (170, 170, 195), r.center, center=True, outline=sel)
+            if i < n_tracks:
+                playing = MUSIC_TRACKS[i]['key'] == self.audio.track_key
+                shown = ("NOW PLAYING: " if playing else "") + label
+                self.text(shown, 28, (255, 255, 255) if sel else (170, 170, 195), r.center, center=True, outline=sel)
+            elif i in (n_tracks, n_tracks + 1):
+                v = self.audio.music_vol if i == n_tracks else self.audio.sfx_vol
+                self.text(label, 24, (255, 255, 255) if sel else (205, 205, 225), (r.x + 16, r.y + 7), outline=sel)
+                bar = pygame.Rect(r.x + 220, r.y + 20, r.w - 250, 14)
+                pygame.draw.rect(self.screen, (30, 26, 44), bar, border_radius=7)
+                pygame.draw.rect(self.screen, (110, 215, 255), (bar.x, bar.y, int(bar.w * v), bar.h), border_radius=7)
+                pygame.draw.rect(self.screen, (235, 230, 215), bar, 1, border_radius=7)
+                self.text(f"{round(v * 100)}%", 22, (230, 230, 245), (bar.right + 14, r.y + 12))
+            else:
+                self.text(label, 28, (255, 255, 255) if sel else (170, 170, 195), r.center, center=True, outline=sel)
             self._hits.append((r, 'menu', i))
         how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
-        self.draw_inline([how, ('nav', 'confirm'), " to choose     ", ('nav', 'back'), " back"],
-                          WIDTH // 2, y0 + len(items) * 62 + 20, 24)
+        self.draw_inline([how, ('nav', 'confirm'), " pick track     Left/Right: volume     ", ('nav', 'back'), " back"],
+                          WIDTH // 2, y0 + len(items) * (rh + gap) + 20, 22)
+
+    # ------------------------------------------------------------ the SHOP screen
+    def draw_shop(self):
+        p = self.player
+        self.lit_backdrop([(WIDTH // 2, 300, 500, 0.5)])
+        self.dim((0, 0, 10), 70)
+        self.text("SHOP", 56, (255, 214, 90), (WIDTH // 2, 60), center=True, outline=True)
+        self.text(f"Gold: {p.gold}", 26, (255, 220, 100), (WIDTH // 2, 104), center=True)
+        offers = self.shop_offers()
+        items = self.shop_items()
+        y0, rh, gap = 140, 56, 8
+        for i, (label, _) in enumerate(items):
+            r = pygame.Rect(WIDTH // 2 - 280, y0 + i * (rh + gap), 560, rh)
+            sel = i == self.menu_sel
+            is_offer = i < len(offers)
+            afford = (not is_offer) or p.gold >= offers[i][3]
+            self.panel(r, alpha=235 if sel else 200, border=(255, 214, 90) if sel else (110, 100, 130), radius=12,
+                       glow=(255, 214, 90) if sel else None)
+            col = (255, 255, 255) if sel else ((170, 170, 195) if afford else (170, 95, 95))
+            if is_offer:
+                self.text(label, 26, col, (r.x + 16, r.y + 6), outline=sel)
+                self.text(offers[i][2], 18, (190, 190, 215), (r.x + 16, r.y + 32))
+            else:
+                self.text(label, 28, col, r.center, center=True, outline=sel)
+            self._hits.append((r, 'menu', i))
+        how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
+        self.draw_inline([how, ('nav', 'confirm'), " to buy     ", ('nav', 'back'), " leave"],
+                          WIDTH // 2, y0 + len(items) * (rh + gap) + 20, 22)
 
     # ------------------------------------------------------------ the main draw
     def draw(self):
@@ -2240,6 +2462,8 @@ class Game:
             self.draw_controls()
         elif st == 'music':
             self.draw_music()
+        elif st == 'shop':
+            self.draw_shop()
         else:
             scr.fill((0, 0, 0))
             self.draw_world()
@@ -2251,9 +2475,11 @@ class Game:
             c = CLASSES[p.cls]
             if st == 'paused':
                 self.dim((0, 0, 20), 175)
-                self.panel((WIDTH // 2 - 230, 150, 460, 370), alpha=240)
+                pause_items = self.pause_items()
+                panel_h = 246 + (len(pause_items) - 1) * 62   # grows to fit however many rows the menu has
+                self.panel((WIDTH // 2 - 230, 150, 460, panel_h), alpha=240)
                 self.text("PAUSED", 84, (255, 255, 255), (WIDTH // 2, 205), center=True, outline=True)
-                self.draw_menu(self.pause_items(), WIDTH // 2, 270)
+                self.draw_menu(pause_items, WIDTH // 2, 270)
             elif st == 'dead':
                 self.dim((90, 0, 0), 190)
                 self.panel((WIDTH // 2 - 340, 170, 680, 340), alpha=235, border=(220, 70, 70))

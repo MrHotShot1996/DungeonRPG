@@ -91,7 +91,10 @@ class Audio:
         self.music = None
         self.channel = None
         self._music_ready = False
-        self.track_key = self._load_track()
+        settings = self._load_settings()
+        self.track_key = settings['track']
+        self.music_vol = settings['music_vol']
+        self.sfx_vol = settings['sfx_vol']
         try:
             pygame.mixer.quit()
             pygame.mixer.init(RATE, -16, 1, 512)
@@ -103,24 +106,29 @@ class Audio:
             return
         threading.Thread(target=self._build_all, daemon=True).start()
 
-    # ---------------------------------------------------------------- saving & loading which track you picked
-    def _load_track(self):
-        default = MUSIC_TRACKS[0]['key']
+    # ---------------------------------------------------------------- saving & loading your audio choices
+    def _load_settings(self):
+        default = {'track': MUSIC_TRACKS[0]['key'], 'music_vol': 0.35, 'sfx_vol': 1.0}
         if not self.path or not os.path.exists(self.path):
             return default
         try:
             with open(self.path, 'r') as f:
-                key = json.load(f).get('track', default)
-            return key if key in MUSIC_KEYS else default
+                data = json.load(f)
+            track = data.get('track', default['track'])
+            if track not in MUSIC_KEYS:
+                track = default['track']
+            mv = max(0.0, min(1.0, float(data.get('music_vol', default['music_vol']))))
+            sv = max(0.0, min(1.0, float(data.get('sfx_vol', default['sfx_vol']))))
+            return {'track': track, 'music_vol': mv, 'sfx_vol': sv}
         except Exception:
             return default
 
-    def _save_track(self):
+    def _save_settings(self):
         if not self.path:
             return
         try:
             with open(self.path, 'w') as f:
-                json.dump({'track': self.track_key}, f)
+                json.dump({'track': self.track_key, 'music_vol': self.music_vol, 'sfx_vol': self.sfx_vol}, f)
         except Exception:
             pass
 
@@ -233,14 +241,14 @@ class Audio:
         if self.enabled and self._music_ready and self.channel is None and self.music is not None:
             self.channel = self.music.play(loops=-1)
             if self.channel:
-                self.channel.set_volume(0.0 if self.muted else 0.35)
+                self.channel.set_volume(0.0 if self.muted else self.music_vol)
 
     def set_track(self, key):
         """Switches the background music (called from the MUSIC menu). key='off' plays nothing."""
         if key == self.track_key or key not in MUSIC_KEYS:
             return
         self.track_key = key
-        self._save_track()
+        self._save_settings()
         if self.channel:
             self.channel.stop()
             self.channel = None
@@ -248,14 +256,26 @@ class Audio:
             self.music = self.tracks.get(key)
             self.update()
 
+    def set_music_vol(self, v):
+        self.music_vol = round(max(0.0, min(1.0, v)), 2)
+        self._save_settings()
+        if self.channel:
+            self.channel.set_volume(0.0 if self.muted else self.music_vol)
+
+    def set_sfx_vol(self, v):
+        self.sfx_vol = round(max(0.0, min(1.0, v)), 2)
+        self._save_settings()
+
     def play(self, name):
         if self.enabled and not self.muted and name in self.sfx:
-            self.sfx[name].play()
+            ch = self.sfx[name].play()
+            if ch:
+                ch.set_volume(self.sfx_vol)
 
     def toggle_mute(self):
         self.muted = not self.muted
         if self.channel:
-            self.channel.set_volume(0.0 if self.muted else 0.35)
+            self.channel.set_volume(0.0 if self.muted else self.music_vol)
 
     def stop(self):
         if self.enabled:

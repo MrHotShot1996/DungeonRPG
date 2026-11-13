@@ -297,6 +297,14 @@ class Sprites:
         elif w == 'bow':
             pygame.draw.arc(s, (140, 92, 48), pygame.Rect(26, 8, 14, 26), -1.25, 1.25, 3)
             pygame.draw.line(s, (235, 235, 225), (33, 9), (33, 33), 1)
+        elif w == 'fists':
+            wrap = pal.get('wraps', (230, 220, 200))
+            if vertical:
+                pygame.draw.circle(s, wrap, (32, 26), 4)
+                pygame.draw.circle(s, shade(wrap, 0.7), (32, 26), 4, 1)
+            else:
+                pygame.draw.circle(s, wrap, (30, 21), 4)
+                pygame.draw.circle(s, shade(wrap, 0.7), (30, 21), 4, 1)
         else:  # mace
             if vertical:
                 pygame.draw.rect(s, (120, 80, 40), (33, 14, 3, 18)); pygame.draw.circle(s, (240, 210, 90), (34, 12), 5)
@@ -887,6 +895,25 @@ def make_icon(icon, color, size=56):
         P.circle(s, c, (cx, cy + L(2)), r, L(3))
         for k in (-8, 0, 8):
             P.line(s, w, (cx + L(k) - L(4), cy - L(12)), (cx + L(k) + L(4), cy + L(14)), L(3))
+    elif icon == 'fist':
+        P.circle(s, c, (cx, cy + L(3)), r - L(4))
+        for dx in (-10, -3, 4, 11):
+            P.rect(s, w, (cx + L(dx) - L(2), cy - r + L(2), L(4), L(6)))
+        P.line(s, w, (cx - r - L(2), cy - r), (cx - r // 2, cy - r // 2), L(3))
+    elif icon == 'tempest':
+        for k in (r, r - L(6), r - L(12)):
+            if k > 1:
+                P.circle(s, c, (cx, cy), k, L(2))
+        for ang in (0, 90, 180, 270):
+            dx, dy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+            x0, y0 = cx + dx * (r + L(2)), cy + dy * (r + L(2))
+            x1, y1 = cx + dx * (r + L(10)), cy + dy * (r + L(10))
+            P.line(s, w, (x0, y0), (x1, y1), L(3))
+    elif icon == 'kick':
+        P.polygon(s, c, [(cx - r, cy - L(4)), (cx + L(2), cy - L(10)), (cx + r, cy + L(2)),
+                         (cx + L(4), cy + L(10)), (cx - r // 2, cy + L(6))])
+        P.line(s, w, (cx + r, cy + L(2)), (cx + r + L(14), cy + L(2)), L(4))
+        P.polygon(s, w, [(cx + r + L(16), cy + L(2)), (cx + r + L(8), cy - L(5)), (cx + r + L(8), cy + L(9))])
     return pygame.transform.smoothscale(s, (size, size))
 
 
