@@ -8,7 +8,7 @@ import pygame
 
 from settings import *
 from dungeon import Dungeon, FLOOR
-from entities import (Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
+from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
 from sprites import Sprites, make_icon, ui_icon, shade, add
 from sounds import Audio, MUSIC_TRACKS
 from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS
@@ -29,6 +29,9 @@ BOSS_BAR = {'boss': ((230, 140, 255), (150, 50, 190)), 'warlord': ((255, 160, 90
             'lich': ((150, 230, 255), (50, 130, 200)), 'demon': ((255, 110, 70), (180, 30, 20))}
 BOSS_TIER = {'warlord': 'MINI-BOSS', 'lich': 'MINI-BOSS', 'boss': 'MAJOR BOSS', 'demon': 'FINAL BOSS'}
 FLYERS = {'bat': 12, 'wraith': 8}                      # monsters that float above their shadow
+KICK_RANGE = 150          # Monk: how close a monster must be to get kicked
+KICK_DIST = 480           # ...and how far it flies (pixels, about 12 tiles)
+KICK_SPEED = 1000         # ...how fast it flies (pixels per second)
 SKY_STRIKE_REFUND = 0.5                                # Monk: landing the jump leaves this much of the cooldown
 FREEZE_TIME = 2.5                                    # Ghala's Frozen Heart: seconds a monster stays frozen
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
@@ -113,6 +116,7 @@ class Game:
 
     def reset_lists(self):
         self.enemies, self.items, self.projectiles, self.bolts = [], [], [], []
+        self.flung = []                                   # monsters flying through the air from a Dragon's Kick
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
 
     # ------------------------------------------------------------ pretty-picture helpers
@@ -1093,19 +1097,72 @@ class Game:
         self.burst(p.x, p.y, (255, 190, 110), 22, 220, glow=True)
 
     def ab_dragons_kick(self):
+        """Kick the nearest monster FAR away. It plows through every monster on its path (each is hurt once)."""
         p = self.player
-        targets = self.nearest_enemies(p.x, p.y, 130, 1)
+        targets = self.nearest_enemies(p.x, p.y, KICK_RANGE, 1)
         if not targets:
             self.float_text(p.x, p.y - 30, "No target!", (200, 200, 200))
             return False
         e = targets[0]
+        d = V2(e.x - p.x, e.y - p.y)
+        d = d.normalize() if d.length_squared() else V2(p.face)
+        dist = KICK_DIST * (0.3 if e.kind in BOSS_KINDS else 1.0)        # bosses are too heavy to fling far
         self.audio.play('slam')
         self.shake = max(self.shake, 0.5)
         self.rumble(0.8, 300)
-        self.damage_enemy(e, self.power(2.6), crit=True, origin=(p.x, p.y), push=620)
+        self.hitstop = max(self.hitstop, 0.08)
+        p.spin = 0.3
+        self.damage_enemy(e, self.power(2.2), crit=True, knock=False)
         self.burst(e.x, e.y, (255, 140, 60), 20, 220, glow=True)
-        # the kicked monster bowls into anything else nearby, like a wrecking ball
-        self.aoe(e.x, e.y, 90, self.power(1.0), knock=320, ring=False, color=(255, 150, 70), exclude=(e,))
+        self.shockwave(e.x, e.y, 60, (255, 150, 70))
+        if e in self.enemies:                                            # still alive: it gets launched
+            e.stun_t = max(e.stun_t, dist / KICK_SPEED + 0.4)
+        ghost = Entity(e.x, e.y, e.w, e.h)                               # an invisible copy that flies and checks walls
+        self.flung.append(dict(e=e, ghost=ghost, d=d, left=dist, hit={id(e)}))
+
+    def update_flung(self, dt):
+        for f in self.flung[:]:
+            g, e, d = f['ghost'], f['e'], f['d']
+            step = min(f['left'], KICK_SPEED * dt)
+            n = max(1, int(step // 10) + 1)
+            sub, blocked = step / n, False
+            for _ in range(n):
+                ox, oy = g.x, g.y
+                g.move(d.x * sub, d.y * sub, self.dungeon)
+                if math.hypot(g.x - ox, g.y - oy) < sub * 0.5:
+                    blocked = True
+                    break
+                f['left'] -= sub
+                for o in self.enemies[:]:                                # bowl over everything on the way
+                    if o is e or id(o) in f['hit']:
+                        continue
+                    if math.hypot(o.x - g.x, o.y - g.y) < (g.w + o.w) / 2 + 4:
+                        f['hit'].add(id(o))
+                        if o.kind not in BOSS_KINDS:
+                            o.stun_t = max(o.stun_t, 0.5)
+                        self.damage_enemy(o, self.power(2.0), crit=False, origin=(g.x - d.x * 30, g.y - d.y * 30), push=420)
+                        self.burst(o.x, o.y, (255, 150, 60), 14, 200, glow=True)
+                        self.shockwave(o.x, o.y, 45, (255, 170, 90))
+                        self.hitstop = max(self.hitstop, 0.05)
+                        self.shake = max(self.shake, 0.3)
+                        self.rumble(0.5, 120)
+            alive = e in self.enemies
+            if alive:
+                e.x, e.y = g.x, g.y
+                e.kx = e.ky = 0.0
+                e.stun_t = max(e.stun_t, 0.25)
+            self.burst(g.x, g.y, (255, 140, 50), 2, 90, glow=True)       # fiery trail
+            if blocked or f['left'] <= 0.5:
+                self.flung.remove(f)
+                if blocked:                                              # SMASH into a wall
+                    self.audio.play('slam')
+                    self.shake = max(self.shake, 0.5)
+                    self.burst(g.x, g.y, (200, 170, 130), 16, 220)
+                    self.aoe(g.x, g.y, 85, self.power(1.2), knock=300, color=(255, 170, 90), exclude=(e,))
+                    if alive and e in self.enemies:
+                        self.damage_enemy(e, self.power(1.4), crit=False, knock=False)
+                if alive and e in self.enemies:
+                    e.kx = e.ky = 0.0
 
     # ------------------------------------------------------------ updating
     def update_items(self, dt):
@@ -1230,6 +1287,7 @@ class Game:
                 b.update(dt, self)
                 if not b.alive:
                     self.bolts.remove(b)
+            self.update_flung(dt)
             self.update_items(dt)
             self.update_fx(dt)
             self.reveal()

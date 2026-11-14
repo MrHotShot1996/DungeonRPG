@@ -119,5 +119,5 @@ ABILITIES = {
     'tempest_kick': dict(name='Tempest Kick', cd=9, color=(255, 170, 90), icon='tempest',
                          desc='A spinning kick that hits and knocks back every monster around you.'),
     'dragons_kick': dict(name="Dragon's Kick", cd=13, color=(255, 120, 60), icon='kick',
-                        desc='Grab the nearest monster and kick it away hard, blasting anything it crashes into.'),
+                        desc='Kick the nearest monster FAR away. It flies in a straight line and damages every monster it crashes into on the way!'),
 }
