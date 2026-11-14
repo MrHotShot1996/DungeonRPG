@@ -4,7 +4,7 @@ Want a new class? Copy one of the entries below and change the numbers!
 growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."""
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire']
+CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja']
 
 CLASSES = {
     'knight': dict(
@@ -67,6 +67,15 @@ CLASSES = {
                      plume=None, head='helmet', weapon='orb', robe=True, orb=(235, 45, 70),
                      collar=(150, 20, 40), skin=(226, 222, 234)),
         abilities=['blood_drain', 'blood_pool', 'blood_curse']),
+    'ninja': dict(
+        name='Shadow Ninja', short='Ninja', title='The Shadow Ninja', color=(200, 208, 235),
+        blurb='A silent assassin with a living SHADOW that copies his moves.',
+        hp=52, dmg=9, speed=205, crit=0.20, atk='melee', atk_cd=0.24, reach=30, hitsize=58,
+        dash_cd=0.5, growth=(8, 2), role='Shadow assassin',
+        palette=dict(armor=(38, 38, 52), trim=(78, 80, 104), legs=(28, 28, 40), helm=(32, 32, 46),
+                     plume=None, head='hood', weapon='dagger', face='dark', orb=(255, 70, 80),
+                     collar=(190, 40, 55)),
+        abilities=['shadow_shuriken', 'living_shadow', 'shadow_slash']),
 }
 
 ABILITIES = {
@@ -123,4 +132,14 @@ ABILITIES = {
                        desc='Sink into a pool of blood for 2.5 seconds. You cannot be hurt, and monsters on it take damage.'),
     'blood_curse': dict(name='Blood Curse', cd=20, color=(255, 100, 100), icon='curse',
                         desc='Throw cursed blood. Monsters hit take 25% more damage, then BURST after 4 seconds and heal you.'),
+    # --- Shadow Ninja
+    'shadow_shuriken': dict(name='Shadow Shuriken', cd=5, color=(185, 150, 255), icon='shuriken',
+                            desc='Throw 3 spinning shurikens that fly THROUGH monsters. '
+                                 'The first hit is the hardest - every hit after it does less.'),
+    'living_shadow': dict(name='Living Shadow', cd=14, color=(150, 110, 235), icon='shadow',
+                          desc='Throw your shadow forward for 5 seconds. It COPIES your other abilities! '
+                               'Press again to swap places with it.'),
+    'shadow_slash': dict(name='Shadow Slash', cd=6, color=(215, 190, 255), icon='swipe',
+                         desc='Swipe your blades at every monster around you. '
+                              'Your shadow swipes too, and SLOWS what it hits.'),
 }

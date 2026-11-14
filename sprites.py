@@ -107,6 +107,7 @@ class Sprites:
         self._shadows = {}
         self._corpses = {}
         self._bigs = {}
+        self._shadow_copies = {}
         self.foot = {}
         # ---- heroes
         self.player = {}
@@ -196,6 +197,16 @@ class Sprites:
             c.fill((115, 105, 125, 255), special_flags=pygame.BLEND_RGBA_MULT)
             self._corpses[kind] = c
         return self._corpses[kind]
+
+    def shadow_copy(self, cls, d):
+        """A dark, see-through copy of a hero - the Shadow Ninja's Living Shadow."""
+        key = (cls, d)
+        if key not in self._shadow_copies:
+            img = self.player[(cls, d, 0)].copy()
+            img.fill((70, 50, 120, 255), special_flags=pygame.BLEND_RGBA_MULT)     # darken it...
+            img.fill((26, 12, 58, 0), special_flags=pygame.BLEND_RGB_ADD)          # ...and tint it violet
+            self._shadow_copies[key] = img
+        return self._shadow_copies[key]
 
     def slash(self, angle):
         key = (int(round(angle / 45.0)) * 45) % 360
@@ -941,6 +952,29 @@ def make_icon(icon, color, size=56):
             P.circle(s, w, (cx + L(dx), cy + L(dy)), L(rr), L(1))
         P.circle(s, c, (cx, cy - L(12)), L(5))
         P.polygon(s, c, [(cx - L(4), cy - L(14)), (cx, cy - r - L(6)), (cx + L(4), cy - L(14))])
+    elif icon == 'shuriken':                            # a 4-point throwing star
+        pts = []
+        for i in range(8):
+            a = math.radians(i * 45 + 20)
+            k = r + L(4) if i % 2 == 0 else r * 0.34
+            pts.append((cx + math.cos(a) * k, cy + math.sin(a) * k))
+        P.polygon(s, c, pts)
+        P.polygon(s, w, pts, L(2))
+        P.circle(s, (30, 24, 46), (cx, cy), L(4))
+        P.circle(s, w, (cx, cy), L(4), L(1))
+    elif icon == 'shadow':                              # a figure, and its darker twin stepping out of it
+        for dx, col in ((L(7), shade(c, 0.45)), (-L(6), c)):
+            P.circle(s, col, (cx + dx, cy - r + L(6)), L(7))
+            P.polygon(s, col, [(cx + dx - L(10), cy + r + L(2)), (cx + dx - L(7), cy - L(3)), (cx + dx + L(7), cy - L(3)),
+                               (cx + dx + L(10), cy + r + L(2))])
+        P.circle(s, w, (cx - L(6), cy - r + L(6)), L(7), L(1))
+        P.line(s, w, (cx - L(9), cy - r + L(6)), (cx - L(3), cy - r + L(6)), L(2))
+    elif icon == 'swipe':                               # blades whirling all the way round
+        for k in range(3):
+            a0 = k * 2.0944
+            P.arc(s, c, (cx - r, cy - r, 2 * r, 2 * r), a0, a0 + 1.6, L(5))
+            P.arc(s, w, (cx - r + L(6), cy - r + L(6), 2 * r - L(12), 2 * r - L(12)), a0 + 0.3, a0 + 1.4, L(2))
+        P.circle(s, w, (cx, cy), L(4))
     elif icon == 'trislash':
         for i, col in enumerate((c, c, w)):
             off = L(-9 + i * 9)

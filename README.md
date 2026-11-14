@@ -6,14 +6,19 @@
 3. Run:  `python main.py`   (Mac/Linux: `python3 main.py`)
    - If pygame is missing, main.py installs it for you automatically.
 
-## Pick your hero (7 classes, 20 floors)
+## Pick your hero (8 classes, 20 floors)
 Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
+the Shadow Ninja,
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a
 War Cry, and grows his sword with Greatblade (more damage and reach - press it again to throw blade waves).
 The Vampire Lord drains blood from monsters to heal a little (Blood Drain), sinks into a Blood Pool where nothing
 can hurt him while monsters standing on it take damage, and throws a Blood Curse: cursed monsters take 25% more
 damage from you, then burst after 4 seconds - the more you hurt them, the bigger the burst - and the burst heals you.
+The Shadow Ninja throws 3 Shadow Shurikens that fly through monsters (the first hit is the hardest - every hit
+after it does half), sends out a Living Shadow for 5 seconds that copies his other two abilities from where it
+stands (press the ability again to swap places with it, once per shadow), and cuts everything around him with
+Shadow Slash - the shadow's own slash also slows monsters, and a monster caught in both is only hurt once.
 Ghala throws a Frozen Heart that freezes a monster solid, and spins a damaging Flower Ring around herself.
 Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
 Hold the Stats button to see your numbers.

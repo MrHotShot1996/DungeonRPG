@@ -45,6 +45,11 @@ POOL_TIME, POOL_RADIUS, POOL_TICK = 2.5, 95, 0.5    # Blood Pool: how long, how 
 CURSE_THROW, CURSE_RADIUS = 130, 105    # Blood Curse: how far in front it lands, and how wide the splash is
 CURSE_TIME, CURSE_AMP = 4.0, 1.25       # ...seconds until cursed monsters burst, and the extra damage they take (x1.25)
 CURSE_BURST, CURSE_HEAL = 0.4, 0.12     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 12% of the burst
+SHURIKEN_SPREAD = 11                    # Shadow Ninja's shurikens: degrees between the 3 of them
+SHURIKEN_FALLOFF = 0.5                  # ...every hit after the first does this much of the damage (0.5 = half)
+SHADOW_TIME, SHADOW_THROW = 5.0, 170    # Living Shadow: seconds it lasts, and how far in front of you it lands
+SHADOW_SPEED = 1300                     # ...and how fast it flies there (pixels per second)
+SWIPE_RADIUS, SWIPE_SLOW = 105, 1.5     # Shadow Slash: how wide, and seconds the SHADOW's swipe slows monsters
 FREEZE_TIME = 2.5                                  # Ghala's Frozen Heart: seconds a monster stays frozen
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
@@ -158,6 +163,7 @@ class Game:
         self.sweeps = []                                  # the Swordsman's sword arcs (just for looks)
         self.drops = []                                   # Vampire Lord: blood flying back to you
         self.splashes = []                                # ...and the blood thrown on the floor by Blood Curse
+        self.shadow = None                                # Shadow Ninja: the Living Shadow (a dict) while it is out
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
 
     # ------------------------------------------------------------ pretty-picture helpers
@@ -506,10 +512,14 @@ class Game:
     # ------------------------------------------------------------ fighting basics
     def aim_dir(self):
         """Ranged attacks aim where you face, with a little help toward monsters in front of you."""
+        return self.aim_pick()[0]
+
+    def aim_pick(self):
+        """The same aim as aim_dir(), plus WHICH monster the aim help picked (None if it picked nobody)."""
         p = self.player
         if not self.input.settings['aim_assist']:
-            return V2(p.face)
-        best, score = None, 1e9
+            return V2(p.face), None
+        best, score, who = None, 1e9, None
         for e in self.enemies:
             dx, dy = e.x - p.x, e.y - p.y
             dist = math.hypot(dx, dy)
@@ -520,8 +530,8 @@ class Game:
                 continue
             sc = ang * 4 + dist * 0.2
             if sc < score:
-                best, score = V2(dx, dy).normalize(), sc
-        return best if best else V2(p.face)
+                best, score, who = V2(dx, dy).normalize(), sc, e
+        return (best, who) if best else (V2(p.face), None)
 
     def player_attack(self):
         p = self.player
@@ -830,6 +840,9 @@ class Game:
             return
         if name == 'greatblade' and self.blade_wave_ready():
             self.ab_blade_wave()          # second press while the sword is extended: throw blade waves
+            return
+        if name == 'living_shadow' and self.shadow_swap_ready():
+            self.ab_shadow_swap()         # second press while the shadow is out: swap places with it
             return
         if p.ability_cd[slot] > 0:
             return
@@ -1301,6 +1314,130 @@ class Game:
         if n:
             self.float_text(cx, cy - 40, "CURSED!", (255, 110, 110), big=True)
 
+    # -- Shadow Ninja
+    def shadow_on(self):
+        """True while the Living Shadow is out (so it will copy abilities 1 and 3)."""
+        return self.shadow is not None
+
+    def shadow_swap_ready(self):
+        """True while the shadow is out and we haven't swapped places with it yet."""
+        return self.shadow is not None and not self.shadow['swapped']
+
+    def throw_shurikens(self, x, y, base, volley):
+        """Three shurikens in a tight fan from (x, y). `volley` is shared by every shuriken of one cast,
+        so a monster only takes the FULL hit once - everything after that is the weaker hit."""
+        for a in (-SHURIKEN_SPREAD, 0, SHURIKEN_SPREAD):
+            d = base.rotate(a)
+            self.bolts.append(Bolt(x + d.x * 14, y + d.y * 14, d.x * 520, d.y * 520, self.power(1.4),
+                                   (185, 150, 255), 9, 0.8, pierce=True, kind='shuriken', crit=None,
+                                   falloff=SHURIKEN_FALLOFF, volley=volley))
+        self.burst(x + base.x * 16, y + base.y * 16, (185, 150, 255), 8, 110, glow=True)
+
+    def ab_shadow_shuriken(self):
+        """Throw 3 shurikens where you point. If the Living Shadow is out, it throws 3 more at the same target."""
+        p = self.player
+        d, target = self.aim_pick()
+        p.face = V2(d)
+        self.audio.play('knife')
+        volley = set()
+        self.throw_shurikens(p.x, p.y, d, volley)
+        sh = self.shadow
+        if sh:
+            sd = V2(d)                                       # the shadow throws the same way you do...
+            if target is not None and target in self.enemies and self.dungeon.line_clear(sh['e'].x, sh['e'].y,
+                                                                                       target.x, target.y):
+                v = V2(target.x - sh['e'].x, target.y - sh['e'].y)
+                if v.length_squared() > 1:                   # ...or straight at your target, if it can see it
+                    sd = v.normalize()
+            sh['face'] = V2(sd)
+            sh['act'] = 0.25
+            self.throw_shurikens(sh['e'].x, sh['e'].y, sd, volley)
+
+    def ab_living_shadow(self):
+        """Throw your shadow forward. update_shadow() flies it out (it stops at walls) and counts it down.
+        While it is out, ab_shadow_shuriken() and ab_shadow_slash() are copied from where it stands."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        self.shadow = dict(e=Entity(p.x, p.y, p.w, p.h), d=V2(d), left=float(SHADOW_THROW), t=SHADOW_TIME,
+                           face=V2(d), swapped=False, act=0.0)
+        self.audio.play('warp')
+        self.burst(p.x, p.y, (150, 110, 235), 14, 150, glow=True)
+        self.float_text(p.x, p.y - 34, "Shadow!", (190, 160, 255), big=True)
+
+    def ab_shadow_swap(self):
+        """The Living Shadow recast: you and your shadow trade places (once per shadow)."""
+        p, sh = self.player, self.shadow
+        g = sh['e']
+        if self.dungeon.hits_wall(pygame.Rect(int(g.x - p.w / 2), int(g.y - p.h / 2), p.w, p.h)):
+            return                                           # (can't happen - the shadow never enters a wall)
+        sh['swapped'] = True
+        sh['left'] = 0.0                                     # if it was still flying, it stops where you were
+        self.burst(p.x, p.y, (150, 110, 235), 16, 160, glow=True)
+        (p.x, p.y), (g.x, g.y) = (g.x, g.y), (p.x, p.y)
+        p.kx = p.ky = 0.0
+        p.dash_t = 0.0
+        p.invuln = max(p.invuln, 0.3)
+        self.audio.play('warp')
+        self.burst(p.x, p.y, (190, 160, 255), 16, 160, glow=True)
+        self.shockwave(p.x, p.y, 44, (170, 130, 255))
+
+    def swipe_at(self, x, y, slow, exclude):
+        """One Shadow Slash circle. Returns the monsters standing in it (so nobody gets hurt twice)."""
+        inside = [e for e in self.enemies if math.hypot(e.x - x, e.y - y) <= SWIPE_RADIUS + e.w / 2]
+        self.sweeps.append([x, y, self.t * 7 % 6.2832, SWIPE_RADIUS, math.pi, 0.25, 0.25, (190, 160, 255)])
+        self.sweeps.append([x, y, self.t * 7 % 6.2832, SWIPE_RADIUS * 0.6, math.pi, 0.2, 0.2, (120, 80, 200)])
+        self.aoe(x, y, SWIPE_RADIUS, self.power(1.7), knock=230, slow=slow, color=(170, 130, 255), exclude=exclude)
+        for pr in self.projectiles:                          # the blades cut arrows out of the air too
+            if math.hypot(pr.x - x, pr.y - y) < SWIPE_RADIUS:
+                pr.alive = False
+        return inside
+
+    def ab_shadow_slash(self):
+        """Swipe at everything around you. The Living Shadow swipes around ITSELF too: monsters it reaches are
+        slowed, but a monster caught in both swipes is only hurt once."""
+        p = self.player
+        p.spin = 0.3
+        self.audio.play('whirl')
+        self.audio.play('swing')
+        self.shake = max(self.shake, 0.2)
+        hit = self.swipe_at(p.x, p.y, 0.0, None)
+        sh = self.shadow
+        if sh:
+            sh['act'] = 0.3
+            for e in hit:                                    # in both circles: no second hit, but still slowed
+                if e in self.enemies and math.hypot(e.x - sh['e'].x, e.y - sh['e'].y) <= SWIPE_RADIUS + e.w / 2:
+                    e.slow_t = max(e.slow_t, SWIPE_SLOW)
+            self.swipe_at(sh['e'].x, sh['e'].y, SWIPE_SLOW, hit)
+
+    def update_shadow(self, dt):
+        sh = self.shadow
+        if sh is None:
+            return
+        g = sh['e']
+        if sh['left'] > 0:                                   # still flying out: small steps, stop at walls
+            step = min(sh['left'], SHADOW_SPEED * dt)
+            n = max(1, int(step // 8) + 1)
+            sub = step / n
+            for _ in range(n):
+                ox, oy = g.x, g.y
+                g.move(sh['d'].x * sub, sh['d'].y * sub, self.dungeon)
+                if math.hypot(g.x - ox, g.y - oy) < sub * 0.5:
+                    sh['left'] = 0.0
+                    break
+                sh['left'] -= sub
+            if sh['left'] < 0.5:
+                sh['left'] = 0.0
+                self.shockwave(g.x, g.y, 36, (150, 110, 235))
+        sh['act'] = max(0.0, sh['act'] - dt)
+        sh['t'] -= dt
+        if random.random() < 0.35 * self.fx:
+            self.particles.append(Particle(g.x + random.uniform(-9, 9), g.y + random.uniform(-4, 10), 0, -34, 0.5,
+                                           (95, 60, 170), 3))
+        if sh['t'] <= 0:                                     # time is up: it melts away
+            self.shadow = None
+            self.burst(g.x, g.y, (120, 80, 200), 14, 120, glow=True)
+
     def update_blood(self, dt):
         p = self.player
         # --- Blood Pool: hurt (and slow) everything standing on it, a few times a second
@@ -1524,6 +1661,7 @@ class Game:
                     self.bolts.remove(b)
             self.update_flung(dt)
             self.update_blood(dt)
+            self.update_shadow(dt)
             self.update_items(dt)
             self.update_fx(dt)
             self.reveal()
@@ -2145,6 +2283,17 @@ class Game:
         for tr in self.trail:                                                # dash after-images
             img = sp.player[(p.cls, tr[2], 0)]
             self.blit_feet(img, tr[0] - cx, tr[1] - cy + p.h / 2 + 2, sp.foot[('p', p.cls)], int(130 * tr[3] / 0.22))
+        sh = self.shadow
+        if sh and (sh['t'] > 1.0 or int(t * 12) % 2):                        # the Shadow Ninja's Living Shadow
+            g = sh['e']                                                      # (it flickers just before it fades)
+            f = sh['face']
+            dname = ('right' if f.x > 0 else 'left') if abs(f.x) > abs(f.y) else ('down' if f.y > 0 else 'up')
+            img = sp.shadow_copy(p.cls, dname)
+            bob = int(1.5 * math.sin(t * 5))
+            self.blit_feet(img, g.x - cx, g.y - cy + p.h / 2 + 2 + bob, sp.foot[('p', p.cls)], 245 if sh['act'] > 0 else 205)
+            self.add_glow(g.x - cx, g.y - cy + 10, 48, (110, 70, 210), 0.3 + 0.08 * math.sin(t * 6))
+            pygame.draw.ellipse(scr, (150, 110, 235), (int(g.x - cx) - 17, int(g.y - cy + p.h / 2) - 5, 34, 14), 2)
+            lights.append((g.x, g.y, 110, (150, 110, 235), 0.35, 0.15))
         for o in things:
             sx, sy = int(o.x - cx), int(o.y - cy)
             if sx < -90 or sx > WIDTH + 90 or sy < -90 or sy > HEIGHT + 90:
@@ -2210,9 +2359,10 @@ class Game:
         for s in self.sweeps:                                                # sword arcs
             k = s[5] / s[6]
             sx, sy = s[0] - cx, s[1] - cy
+            n = 14 if s[4] < 2 else 40                                       # (full circles need more corners to look round)
             for rr, wd, col in ((s[3], max(2, int(9 * k)), s[7]), (s[3] * 0.82, max(1, int(4 * k)), (255, 255, 255))):
-                pts = [(sx + math.cos(s[2] - s[4] + 2 * s[4] * i / 14) * rr,
-                        sy + math.sin(s[2] - s[4] + 2 * s[4] * i / 14) * rr) for i in range(15)]
+                pts = [(sx + math.cos(s[2] - s[4] + 2 * s[4] * i / n) * rr,
+                        sy + math.sin(s[2] - s[4] + 2 * s[4] * i / n) * rr) for i in range(n + 1)]
                 pygame.draw.lines(scr, tuple(int(v * (0.4 + 0.6 * k)) for v in col), False, pts, wd)
             pygame.draw.lines(gl, tuple(int(v * k) for v in s[7]), False, [(x / 4, y / 4) for x, y in pts], 2)
         if p.spin > 0:
@@ -2255,6 +2405,16 @@ class Game:
                 pygame.draw.line(scr, b.color, (sx, sy), (sx - ux * ln, sy - uy * ln), 3)
                 pygame.draw.circle(scr, (255, 255, 255), (sx, sy), 2)
                 self.add_glow(sx, sy, 26, b.color, 0.6)
+            elif b.kind == 'shuriken':                                       # a spinning 4-point star
+                a0 = t * 26
+                pts = [(sx + math.cos(a0 + i * 0.7854) * (b.radius + 3 if i % 2 == 0 else b.radius * 0.36),
+                        sy + math.sin(a0 + i * 0.7854) * (b.radius + 3 if i % 2 == 0 else b.radius * 0.36))
+                       for i in range(8)]
+                pygame.draw.polygon(scr, (34, 26, 54), pts)
+                pygame.draw.polygon(scr, b.color, pts, 2)
+                pygame.draw.circle(scr, (235, 225, 255), (sx, sy), 2)
+                self.add_glow(sx, sy, 24, b.color, 0.35)
+                lights.append((b.x, b.y, 60, b.color, 0.3, 0.2))
             elif b.kind == 'heart':
                 self.draw_heart(sx, sy - 3, b.radius + int(1.5 * math.sin(t * 22)), b.color)
                 self.add_glow(sx, sy, 56, (170, 225, 255), 1.0)
@@ -2565,12 +2725,17 @@ class Game:
                 recast, count = True, 3 - p.combo
             if names[i] == 'greatblade' and self.blade_wave_ready():           # press again: blade waves!
                 recast = True
+            if names[i] == 'living_shadow' and self.shadow_swap_ready():       # press again: swap places!
+                recast = True
             self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'],
                            0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked, count=count)
             if recast and not locked and int(self.t * 6) % 2:
                 pygame.draw.rect(scr, (255, 255, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
             if names[i] == 'greatblade' and self.blade_on():                   # how long the big sword lasts
                 self.text(f"{p.buffs['greatblade']:.0f}s", 20, (190, 245, 255), (x0 + i * 76 + 33, y0 - 12),
+                          center=True, outline=True)
+            if names[i] == 'living_shadow' and self.shadow_on():               # how long the shadow stays
+                self.text(f"{max(0.0, self.shadow['t']):.1f}s", 20, (200, 175, 255), (x0 + i * 76 + 33, y0 - 12),
                           center=True, outline=True)
             if names[i] == 'blood_pool' and p.buffs.get('pool', 0) > 0:        # how long you stay in the pool
                 self.text(f"{p.buffs['pool']:.1f}s", 20, (255, 150, 165), (x0 + i * 76 + 33, y0 - 12),

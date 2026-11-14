@@ -770,12 +770,14 @@ class Projectile:
 class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
-                 kind='magic', crit=False, leech=False, mark=False, freeze=0.0):
+                 kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
         self.mark = mark       # Monk's Sky Strike: the orb sticks to the first monster it hits
         self.freeze = freeze   # Ghala's Frozen Heart: seconds the monster it hits stays frozen
+        self.falloff = falloff # Shadow Ninja's shurikens: every hit after the FIRST does this much of the damage
+        self.volley = volley   # ...a set shared by all shurikens of one throw: the monsters that throw already hit
         self.alive = True
         self.hit = set()
 
@@ -791,7 +793,10 @@ class Bolt:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.life -= dt
-        if random.random() < 0.8 * game.fx:
+        if self.kind == 'shuriken':                      # shurikens leave a thin, dark trail (not a bright one)
+            if random.random() < 0.5 * game.fx:
+                game.particles.append(Particle(self.x, self.y, 0, 0, 0.22, (70, 45, 130), 3))
+        elif random.random() < 0.8 * game.fx:
             game.particles.append(Particle(self.x, self.y, random.uniform(-20, 20), random.uniform(-20, 20),
                                            0.3, self.color, 3, glow=True))
         if self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):
@@ -803,11 +808,15 @@ class Bolt:
             if id(e) in self.hit:
                 continue
             if math.hypot(e.x - self.x, e.y - self.y) < e.w / 2 + self.radius + 2:
+                first = len(self.hit) == 0 and (self.volley is None or id(e) not in self.volley)
                 self.hit.add(id(e))
+                if self.volley is not None:
+                    self.volley.add(id(e))
                 if self.aoe:
                     self.explode(game)
                     return
-                game.damage_enemy(e, int(self.dmg), crit=self.crit, origin=(self.x - self.vx, self.y - self.vy),
+                dmg = self.dmg if first else self.dmg * self.falloff     # (falloff is 1.0 for everything but shurikens)
+                game.damage_enemy(e, int(dmg), crit=self.crit, origin=(self.x - self.vx, self.y - self.vy),
                                   leech=self.leech)
                 if self.mark and e in game.enemies:   # only mark it if the hit didn't kill it outright
                     p = game.player
