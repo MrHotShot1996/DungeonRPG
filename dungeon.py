@@ -1,7 +1,7 @@
 """dungeon.py - builds a brand new random dungeon every time (rooms + hallways)."""
 import math
 import random
-from settings import MAP_W, MAP_H, TILE
+from settings import MAP_W, MAP_H, TILE, BOSS_FLOORS
 
 WALL = 0
 FLOOR = 1
@@ -30,7 +30,7 @@ class Dungeon:
     def _generate(self):
         # keep trying until we get at least 6 rooms
         target = min(11, 8 + self.floor // 3)
-        boss_floor = self.floor in (5, 10)
+        boss_floor = self.floor in BOSS_FLOORS
         while len(self.rooms) < 6:
             self.grid = [[WALL] * MAP_W for _ in range(MAP_H)]
             self.rooms = []

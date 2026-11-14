@@ -6,7 +6,7 @@ from settings import TILE
 from classes import CLASSES
 
 V2 = pygame.Vector2
-BOSS_KINDS = ('boss', 'warlord')
+BOSS_KINDS = ('boss', 'warlord', 'lich', 'demon')
 
 
 def xp_for(level):
@@ -183,10 +183,13 @@ ENEMY_TYPES = {
     'wraith':   dict(hp=30,  speed=72,  dmg=9,  xp=18,  size=22, sight=320),
     'cultist':  dict(hp=28,  speed=62,  dmg=8,  xp=20,  size=24, sight=380),
     'warlord':  dict(hp=620, speed=70,  dmg=24, xp=300, size=54, sight=560),   # floor 5 mini-boss
-    'boss':     dict(hp=1000, speed=75, dmg=20, xp=600, size=52, sight=600),   # floor 10 final boss
+    'boss':     dict(hp=1200, speed=75, dmg=20, xp=600, size=52, sight=600),   # floor 10 MAJOR boss
+    'lich':     dict(hp=1700, speed=62, dmg=30, xp=900, size=48, sight=620),   # floor 15 mini-boss
+    'demon':    dict(hp=3600, speed=80, dmg=38, xp=2000, size=60, sight=640),  # floor 20 FINAL boss
 }
-MELEE_KINDS = ('slime', 'bat', 'goblin', 'imp', 'brute', 'wraith', 'warlord', 'boss')
-BOSS_NAMES = {'warlord': 'GORRAK THE OGRE WARLORD', 'boss': 'THE BONE KING'}
+MELEE_KINDS = ('slime', 'bat', 'goblin', 'imp', 'brute', 'wraith', 'warlord', 'boss', 'demon')
+BOSS_NAMES = {'warlord': 'GORRAK THE OGRE WARLORD', 'boss': 'THE BONE KING',
+              'lich': 'VELGRIM THE FROST LICH', 'demon': 'MALGOR THE ABYSS DEMON LORD'}
 
 
 class Enemy(Entity):
@@ -198,8 +201,9 @@ class Enemy(Entity):
         super().__init__(x, y, size, size)
         self.floor = floor
         boss = kind in BOSS_KINDS
-        hp_scale = 1.0 if boss else 1 + 0.33 * (floor - 1)       # monsters get tougher every floor!
-        dmg_scale = 1.0 if boss else 1 + 0.16 * (floor - 1)
+        deep = max(0, floor - 10)                                 # after floor 10 they grow a little slower
+        hp_scale = 1.0 if boss else 1 + 0.33 * (min(floor, 10) - 1) + 0.20 * deep       # monsters get tougher every floor!
+        dmg_scale = 1.0 if boss else 1 + 0.16 * (min(floor, 10) - 1) + 0.09 * deep
         self.max_hp = self.hp = int(d['hp'] * hp_scale * (2.2 if self.elite else 1.0))
         self.dmg = int(d['dmg'] * dmg_scale * (1.25 if self.elite else 1.0))
         self.speed = d['speed'] * min(1.3, 1 + 0.03 * (floor - 1))
@@ -465,6 +469,129 @@ class Enemy(Entity):
                         game.projectiles.append(Projectile(self.x, self.y, math.cos(self.spiral_ang) * 200,
                                                            math.sin(self.spiral_ang) * 200, int(self.dmg * 0.5),
                                                            (255, 90, 160), 6))
+
+        elif k == 'lich':        # MINI-BOSS (floor 15): keeps away, fans of ice bolts, blinks, raises skeletons
+            self.keep_distance(pnx, pny, dpl, sp, dt, d, 270, 180)
+            if self.phase == 1 and self.hp < self.max_hp * 0.5:
+                self.phase = 2
+                self.speed *= 1.2
+                game.show_banner("Velgrim is FURIOUS!", "Ice storm incoming")
+                game.audio.play('boss'); game.shake = 0.6
+                for ox in (-80, 80):
+                    game.enemies.append(Enemy('skeleton', self.x + ox, self.y + 10, self.floor))
+                    game.enemies[-1].awake = True
+            self.shoot_t -= dt
+            if self.shoot_t <= 0 and d.line_clear(self.x, self.y, p.x, p.y):
+                self.shoot_t = (1.9, 1.3)[self.phase - 1]
+                base, n = math.atan2(pny, pnx), (5, 7)[self.phase - 1]
+                for i in range(n):
+                    da = (i - (n - 1) / 2) * 0.2
+                    game.projectiles.append(Projectile(self.x, self.y, math.cos(base + da) * 235, math.sin(base + da) * 235,
+                                                       int(self.dmg * 0.7), (150, 225, 255), 7,
+                                                       effect='slow' if i == n // 2 else None))
+                game.audio.play('shoot')
+            self.tele_t -= dt
+            if self.tele_t <= 0:
+                self.tele_t = random.uniform(4.0, 5.5)
+                for _ in range(14):
+                    a, r = random.random() * 6.283, random.uniform(180, 250)
+                    bx, by = p.x + math.cos(a) * r, p.y + math.sin(a) * r
+                    rc = pygame.Rect(int(bx - self.w / 2), int(by - self.h / 2), self.w, self.h)
+                    if not d.hits_wall(rc) and d.line_clear(bx, by, p.x, p.y):
+                        game.burst(self.x, self.y, (150, 225, 255), 14, 130, glow=True)
+                        self.x, self.y = bx, by
+                        game.burst(bx, by, (150, 225, 255), 14, 130, glow=True)
+                        game.audio.play('warp')
+                        for i in range(10):                         # frost ring after every blink
+                            ang = i * 6.2832 / 10
+                            game.projectiles.append(Projectile(bx, by, math.cos(ang) * 170, math.sin(ang) * 170,
+                                                               int(self.dmg * 0.5), (190, 240, 255), 6))
+                        break
+            self.summon_t -= dt
+            if self.summon_t <= 0:
+                self.summon_t = (13, 9)[self.phase - 1]
+                if len(game.enemies) < 10:
+                    for ox in (-90, 90):
+                        game.enemies.append(Enemy(random.choice(('skeleton', 'cultist')), self.x + ox, self.y + 20, self.floor))
+                        game.enemies[-1].awake = True
+                        game.burst(self.x + ox, self.y + 20, (150, 225, 255), 14, 140, glow=True)
+                    game.audio.play('warp')
+
+        elif k == 'demon':       # FINAL BOSS (floor 20): four phases - charges, slams, fire rings, spirals
+            frac = self.hp / self.max_hp
+            want = 1 if frac > 0.75 else 2 if frac > 0.5 else 3 if frac > 0.25 else 4
+            if want > self.phase:
+                self.phase = want
+                self.speed *= 1.1
+                game.show_banner(("", "Malgor is ENRAGED!", "MALGOR TEARS OPEN THE ABYSS!", "MALGOR'S FINAL FURY!")[want - 1])
+                game.audio.play('boss'); game.shake = 0.8
+                game.rumble(0.9, 500)
+                if want >= 2 and len(game.enemies) < 12:
+                    for ox in (-80, 80):
+                        game.enemies.append(Enemy('imp' if want == 2 else 'wraith', self.x + ox, self.y, self.floor))
+                        game.enemies[-1].awake = True
+            if self.state == 'chase':
+                if dist > 70:
+                    self.move(nx * sp * dt, ny * sp * dt, d)
+                if self.state_t <= 0:
+                    if dist < 180:
+                        self.state, self.state_t, self.warn = 'slamwind', 0.8, True
+                    else:
+                        self.state, self.state_t, self.warn = 'wind', 0.7, True
+                    game.audio.play('warn')
+            elif self.state == 'wind':
+                if self.state_t <= 0:
+                    self.state, self.state_t, self.warn = 'charge', 0.55, False
+                    self.vec = (nx, ny)
+                    game.audio.play('roar')
+            elif self.state == 'charge':
+                self.move(self.vec[0] * sp * 4.4 * dt, self.vec[1] * sp * 4.4 * dt, d)
+                game.burst(self.x, self.y + 16, (255, 120, 50), 1, 70, glow=True)
+                if self.state_t <= 0:
+                    self.state, self.state_t = 'chase', random.uniform(1.6, 2.6) / (1 + 0.15 * (self.phase - 1))
+            elif self.state == 'slamwind':
+                if self.state_t <= 0:
+                    game.slam(self.x, self.y, 175, int(self.dmg * 1.1))
+                    if self.phase >= 2:                              # the slam throws out a ring of fire
+                        for i in range(14):
+                            ang = i * 6.2832 / 14
+                            game.projectiles.append(Projectile(self.x, self.y, math.cos(ang) * 190, math.sin(ang) * 190,
+                                                               int(self.dmg * 0.45), (255, 120, 40), 7))
+                    self.state, self.state_t, self.warn = 'chase', random.uniform(1.8, 2.8), False
+            self.shoot_t -= dt
+            if self.shoot_t <= 0:
+                self.shoot_t = (3.2, 2.6, 2.1, 1.7)[self.phase - 1]
+                n, off = 14 + 3 * (self.phase - 1), random.random() * 6.28
+                for i in range(n):
+                    a = off + i * 6.2832 / n
+                    game.projectiles.append(Projectile(self.x, self.y, math.cos(a) * 175, math.sin(a) * 175,
+                                                       int(self.dmg * 0.5), (255, 90, 40), 7))
+                game.audio.play('shoot')
+            if self.phase >= 2:
+                self.spiral_t -= dt
+                if self.spiral_on <= 0 and self.spiral_t <= 0:
+                    self.spiral_on, self.spiral_t = 2.4, (0, 6.5, 5.5, 4.5)[self.phase - 1]
+                if self.spiral_on > 0:
+                    self.spiral_on -= dt
+                    self.spiral_shot -= dt
+                    if self.spiral_shot <= 0:
+                        self.spiral_shot = 0.08
+                        self.spiral_ang += 0.55
+                        arms = 2 if self.phase >= 4 else 1
+                        for arm in range(arms):
+                            ang = self.spiral_ang + arm * math.pi
+                            game.projectiles.append(Projectile(self.x, self.y, math.cos(ang) * 200, math.sin(ang) * 200,
+                                                               int(self.dmg * 0.4), (255, 60, 120), 6))
+            if self.phase >= 3:
+                self.summon_t -= dt
+                if self.summon_t <= 0:
+                    self.summon_t = 11 if self.phase == 3 else 8
+                    if len(game.enemies) < 12:
+                        for ox in (-100, 100):
+                            game.enemies.append(Enemy(random.choice(('imp', 'brute', 'cultist')), self.x + ox, self.y + 20, self.floor))
+                            game.enemies[-1].awake = True
+                            game.burst(self.x + ox, self.y + 20, (255, 100, 40), 14, 140, glow=True)
+                        game.audio.play('warp')
 
         # touching the player or an ally hurts them
         if k != 'imp':

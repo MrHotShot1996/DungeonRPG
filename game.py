@@ -21,7 +21,13 @@ V2 = pygame.Vector2
 CORPSE_TO_MINION = {'slime': 'skeleton', 'bat': 'skeleton', 'goblin': 'skeleton', 'imp': 'skeleton', 'spider': 'skeleton',
                     'skeleton': 'archer', 'cultist': 'archer', 'wraith': 'archer', 'brute': 'bonebrute'}
 MINION_CAPS = {'undead': 8, 'army': 6, 'wolf': 4, 'hawk': 2, 'bear': 1}
-KNOCK_RESIST = {'boss': 0.2, 'warlord': 0.15, 'brute': 0.3}
+KNOCK_RESIST = {'boss': 0.2, 'warlord': 0.15, 'brute': 0.3, 'lich': 0.2, 'demon': 0.1}
+BOSS_GUARDS = {'warlord': ('goblin', 'goblin'), 'boss': ('skeleton', 'cultist', 'skeleton', 'cultist'),
+               'lich': ('skeleton', 'cultist', 'skeleton', 'wraith'), 'demon': ('imp', 'brute', 'cultist', 'wraith', 'imp')}
+BOSS_LIGHT = {'boss': (200, 80, 255), 'warlord': (255, 120, 60), 'lich': (120, 220, 255), 'demon': (255, 70, 30)}
+BOSS_BAR = {'boss': ((230, 140, 255), (150, 50, 190)), 'warlord': ((255, 160, 90), (190, 80, 30)),
+            'lich': ((150, 230, 255), (50, 130, 200)), 'demon': ((255, 110, 70), (180, 30, 20))}
+BOSS_TIER = {'warlord': 'MINI-BOSS', 'lich': 'MINI-BOSS', 'boss': 'MAJOR BOSS', 'demon': 'FINAL BOSS'}
 FLYERS = {'bat': 12, 'wraith': 8}                      # monsters that float above their shadow
 SKY_STRIKE_REFUND = 0.5                                # Monk: landing the jump leaves this much of the cooldown
 FREEZE_TIME = 2.5                                    # Ghala's Frozen Heart: seconds a monster stays frozen
@@ -38,8 +44,8 @@ def spawn_weights(floor):
         'imp': 3 if floor >= 2 else 0,
         'spider': 3 if floor >= 2 else 0,
         'brute': (2 + floor // 4) if floor >= 3 else 0,
-        'wraith': 2 if floor >= 3 else 0,
-        'cultist': 3 if floor >= 4 else 0,
+        'wraith': (2 + (floor - 10) // 3) if floor >= 11 else 2 if floor >= 3 else 0,
+        'cultist': (3 + (floor - 10) // 3) if floor >= 11 else 3 if floor >= 4 else 0,
     }
 
 
@@ -282,12 +288,11 @@ class Game:
             if boss_kind and is_last:
                 bx, by = (room.x + room.w - 3.5) * TILE, (room.y + room.h / 2) * TILE
                 self.enemies.append(Enemy(boss_kind, bx, by, self.floor))
-                guards = ('goblin', 'goblin') if boss_kind == 'warlord' else ('skeleton', 'cultist', 'skeleton', 'cultist')
-                for kind in guards:
+                for kind in BOSS_GUARDS[boss_kind]:
                     x, y = self.dungeon.random_spot(room)
                     self.enemies.append(Enemy(kind, x, y, self.floor))
                 continue
-            count = min(6, random.randint(1, 2) + self.floor // 2 + (1 if self.floor >= 8 else 0))
+            count = min(7, random.randint(1, 2) + self.floor // 2 + (1 if self.floor >= 8 else 0))
             for _ in range(count):
                 kind = random.choices(kinds, weights)[0]
                 x, y = self.dungeon.random_spot(room)
@@ -328,7 +333,8 @@ class Game:
         self.cam = V2(p.x - WIDTH / 2, p.y - HEIGHT / 2)
         self.fade = 1.0
         self.trail = []
-        self.show_banner(f"Floor {self.floor}", floor_name(self.floor))
+        tier = BOSS_TIER.get(BOSS_FLOORS.get(self.floor))
+        self.show_banner(f"Floor {self.floor}", floor_name(self.floor) + (f"  -  {tier}!" if tier else ""))
 
     def render_level(self):
         """Paint the whole dungeon onto one big picture ONE time (so the game stays fast)."""
@@ -632,22 +638,31 @@ class Game:
         while p.xp >= p.xp_next:
             p.xp -= p.xp_next
             self.level_up()
-        if e.kind == 'boss':
+        if e.kind == 'demon':
             self.projectiles.clear()
             self.boss_dead_timer = 3.0
             self.hitstop = 0.2
             self.rumble(1.0, 700)
             self.shake = 0.9
-            self.show_banner("The Bone King has fallen!")
+            self.show_banner("Malgor has fallen!")
             for en in self.enemies[:]:
                 self.enemies.remove(en)
                 self.burst(en.x, en.y, (200, 200, 220), 12, 150, glow=True)
-        elif e.kind == 'warlord':
+        elif e.kind in ('warlord', 'boss', 'lich'):
             self.projectiles.clear()
-            self.hitstop = 0.15
-            self.shake = 0.7
-            self.show_banner("Gorrak has fallen!", "The stairs are open")
+            major = e.kind == 'boss'
+            self.hitstop = 0.2 if major else 0.15
+            self.shake = 0.9 if major else 0.7
+            self.rumble(1.0 if major else 0.8, 600 if major else 400)
+            self.show_banner({'warlord': "Gorrak has fallen!", 'boss': "The Bone King has fallen!",
+                              'lich': "Velgrim has fallen!"}[e.kind], "The stairs are open")
             self.audio.play('levelup')
+            if major:                                   # a major boss throws a little treasure party
+                for _ in range(8):
+                    self.items.append(Item('coin', e.x + random.randint(-40, 40), e.y + random.randint(-40, 40),
+                                           random.randint(6, 12) * self.floor))
+                self.items.append(Item('potion', e.x + 20, e.y))
+                self.items.append(Item('potion', e.x - 20, e.y))
 
     def level_up(self):
         """Leveling up is AUTOMATIC: every hero grows a little stronger each level."""
@@ -1786,7 +1801,7 @@ class Game:
                 if o.elite:
                     self.add_glow(sx, sy, 70, (255, 200, 60), 0.55)
                 if o.kind in BOSS_KINDS and o.awake:
-                    lights.append((o.x, o.y, 220, (200, 80, 255) if o.kind == 'boss' else (255, 120, 60), 0.4, 0.4))
+                    lights.append((o.x, o.y, 220, BOSS_LIGHT[o.kind], 0.4, 0.4))
             elif isinstance(o, Item):
                 bob = int(2 * math.sin(o.t * 4)) if o.kind == 'potion' else 0
                 if o.kind == 'coin':
@@ -2138,7 +2153,8 @@ class Game:
                 bx = WIDTH // 2 - 240
                 self.panel((bx - 10, 82, 500, 56), alpha=200, border=(200, 70, 110))
                 self.text(e.name, 26, (255, 230, 230), (WIDTH // 2, 98), center=True, outline=True)
-                self.bar(bx, 114, 480, 16, e.hp / e.max_hp, (230, 140, 255), (150, 50, 190))
+                self.text(BOSS_TIER[e.kind], 16, (255, 190, 120), (bx + 480, 92), right=True, outline=True)
+                self.bar(bx, 114, 480, 16, e.hp / e.max_hp, *BOSS_BAR[e.kind])
 
         # ---- ability bar (bottom-centre)
         names = c['abilities']
@@ -2254,7 +2270,7 @@ class Game:
         self.add_glow_screen(WIDTH // 2, 190 + bob, 360, (255, 190, 80), 0.28)
         self.text("ECHOES OF THE", 62, (205, 195, 240), (WIDTH // 2, 92 + bob), center=True, outline=True)
         self.text("BONE KING", 168, (255, 214, 90), (WIDTH // 2, 190 + bob), center=True, outline=True)
-        self.text(f"A DUNGEON RPG  -  10 FLOORS  -  {len(CLASS_ORDER)} HEROES", 30, (190, 190, 220), (WIDTH // 2, 284), center=True, outline=True)
+        self.text(f"A DUNGEON RPG  -  20 FLOORS  -  {len(CLASS_ORDER)} HEROES", 30, (190, 190, 220), (WIDTH // 2, 284), center=True, outline=True)
         items = self.title_items()
         self.draw_menu(items, WIDTH // 2, 322)
         menu_bottom = 322 + (len(items) - 1) * 62 + 52   # draw_menu's default row height(52) + gap(10)
@@ -2588,7 +2604,7 @@ class Game:
                 self.dim((30, 20, 0), 190)
                 self.panel((WIDTH // 2 - 380, 150, 760, 380), alpha=235, border=(255, 210, 90))
                 self.text("VICTORY!", 150, (255, 222, 90), (WIDTH // 2, 235), center=True, outline=True)
-                self.text(f"{c['title']} defeated the Bone King and saved the kingdom!", 36, (255, 255, 255), (WIDTH // 2, 335), center=True)
+                self.text(f"{c['title']} defeated Malgor and saved the kingdom!", 36, (255, 255, 255), (WIDTH // 2, 335), center=True)
                 self.text(f"Level {p.level}     Monsters beaten: {p.kills}     Gold: {p.gold}     Time: {mins}:{secs:02d}", 30, (255, 238, 175), (WIDTH // 2, 385), center=True)
                 self.draw_inline(["Press ", ('nav', 'confirm'), " to play again"], WIDTH // 2, 465, 44)
         self.draw_toasts()

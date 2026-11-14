@@ -6,12 +6,23 @@
 3. Run:  `python main.py`   (Mac/Linux: `python3 main.py`)
    - If pygame is missing, main.py installs it for you automatically.
 
-## Pick your hero (7 classes, 10 floors)
+## Pick your hero (7 classes, 20 floors)
 Knight, Ghala the Mage (pink!), Rogue, Cleric, Necromancer (raises the dead), Beastmaster (calls beasts),
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 Ghala throws a Frozen Heart that freezes a monster solid, and spins a damaging Flower Ring around herself.
 Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
-Floors 5 and 10 have bosses. Hold the Stats button to see your numbers.
+Hold the Stats button to see your numbers.
+
+## The 20 floors and their bosses
+Every 5th floor has a **mini-boss**, every 10th floor has a **major boss**. You must beat the boss to unlock the stairs.
+| Floor | Boss | Type |
+|---|---|---|
+| 5 | Gorrak the Ogre Warlord (charges, slams, calls goblins) | Mini-boss |
+| 10 | The Bone King (3 phases, bullet rings, spirals, summons) | MAJOR boss |
+| 15 | Velgrim the Frost Lich (ice-bolt fans, blinks around, frost rings, raises skeletons) | Mini-boss |
+| 20 | Malgor the Abyss Demon Lord (4 phases: charges, slams, fire rings, double spirals, summons) | FINAL boss - beat him to win! |
+
+Each floor has its own look (frozen catacombs, drowned temple, fungal depths, blood cathedral...), and monsters get tougher the deeper you go.
 
 ## The Shop
 Every time you take the stairs to a new floor, the Shop opens so you can spend the gold you picked up:

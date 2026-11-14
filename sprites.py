@@ -124,6 +124,7 @@ class Sprites:
             'brute': [self._brute(f) for f in (0, 1)], 'wraith': [self._wraith(f) for f in (0, 1)],
             'cultist': [self._cultist(f) for f in (0, 1)], 'boss': [self._boss(f) for f in (0, 1)],
             'warlord': [self._warlord(f) for f in (0, 1)],
+            'lich': [self._lich(f) for f in (0, 1)], 'demon': [self._demon(f) for f in (0, 1)],
         }
         self.enemy = {}
         for k, frames in self.raw.items():
@@ -494,6 +495,75 @@ class Sprites:
         pygame.draw.line(b, (40, 25, 20), (24, 19), (30, 22), 3); pygame.draw.line(b, (40, 25, 20), (41, 19), (35, 22), 3)
         pygame.draw.polygon(b, (245, 245, 230), [(25, 28), (28, 28), (26, 35)])
         pygame.draw.polygon(b, (245, 245, 230), [(36, 28), (39, 28), (38, 35)])
+        s = new(64, 64)
+        s.blit(b, (0, f))
+        return s
+
+    def _lich(self, f):
+        b = new(64, 64)
+        robe, dk, hi = (46, 70, 120), (26, 40, 80), (96, 140, 200)
+        ice = (150, 230, 255)
+        pygame.draw.polygon(b, robe, [(10, 62), (54, 62), (47, 24), (17, 24)])
+        pygame.draw.polygon(b, dk, [(10, 62), (54, 62), (47, 24), (17, 24)], 3)
+        pygame.draw.polygon(b, hi, [(15, 60), (23, 60), (25, 30), (20, 30)])
+        for x in range(10, 54, 8):
+            pygame.draw.polygon(b, dk, [(x, 62), (x + 4, 56), (x + 8, 62)])
+        pygame.draw.rect(b, (24, 26, 48), (19, 42, 26, 4))
+        pygame.draw.circle(b, ice, (32, 44), 3)
+        pygame.draw.circle(b, dk, (32, 22), 15)
+        pygame.draw.polygon(b, dk, [(17, 22), (32, 5), (47, 22)])
+        pygame.draw.circle(b, (10, 8, 20), (32, 24), 10)
+        pygame.draw.ellipse(b, BONE, (25, 16, 14, 16))
+        for ex in (28, 36):
+            pygame.draw.circle(b, (10, 8, 20), (ex, 22), 3)
+            pygame.draw.circle(b, ice, (ex, 22), 2)
+        for x in (28, 32, 36):
+            pygame.draw.line(b, (70, 60, 80), (x, 28), (x, 31), 1)
+        for x, h in ((21, 7), (26, 12), (32, 16), (38, 12), (43, 7)):          # crown of ice
+            pygame.draw.polygon(b, ice, [(x - 2, 12), (x, 12 - h + 4), (x + 2, 12)])
+        pygame.draw.polygon(b, (235, 250, 255), [(31, 12), (32, 0), (33, 12)])
+        pygame.draw.circle(b, BONE, (14, 38), 4); pygame.draw.circle(b, BONE, (50, 36), 4)
+        pygame.draw.line(b, dk, (14, 36), (22, 30), 5); pygame.draw.line(b, dk, (50, 34), (42, 30), 5)
+        pygame.draw.rect(b, (110, 90, 70), (55, 8, 3, 54))                       # ice staff
+        pygame.draw.polygon(b, ice, [(56, 0), (50, 9), (56, 19), (62, 9)])
+        pygame.draw.polygon(b, (235, 250, 255), [(56, 2), (53, 9), (56, 14)])
+        s = new(64, 64)
+        s.blit(b, (0, f * 2))
+        return s
+
+    def _demon(self, f):
+        b = new(64, 64)
+        skin, dk, hi = (176, 34, 42), (112, 18, 30), (232, 78, 62)
+        for sx in (-1, 1):                                                      # leathery wings
+            pts = [(32, 30), (32 + sx * 30, 2 + f * 3), (32 + sx * 33, 22), (32 + sx * 24, 24),
+                   (32 + sx * 27, 40), (32 + sx * 14, 34)]
+            pygame.draw.polygon(b, (72, 12, 32), pts)
+            pygame.draw.polygon(b, (40, 6, 20), pts, 2)
+        pygame.draw.rect(b, dk, (19, 46, 11, 16)); pygame.draw.rect(b, dk, (34, 46, 11, 16))
+        pygame.draw.rect(b, (36, 18, 20), (17, 58, 15, 5)); pygame.draw.rect(b, (36, 18, 20), (33, 58, 15, 5))
+        pygame.draw.ellipse(b, skin, (13, 24, 38, 34))
+        pygame.draw.ellipse(b, hi, (22, 32, 20, 18))
+        pygame.draw.circle(b, (255, 190, 60), (32, 41), 5)                       # glowing rune on chest
+        pygame.draw.circle(b, (255, 245, 170), (32, 41), 2)
+        pygame.draw.rect(b, skin, (5, 30, 10, 22), border_radius=4); pygame.draw.rect(b, skin, (49, 30, 10, 22), border_radius=4)
+        for cx in (7, 57):
+            for dx in (-3, 0, 3):
+                pygame.draw.polygon(b, (240, 230, 210), [(cx + dx - 2, 50), (cx + dx, 58), (cx + dx + 2, 50)])
+        pygame.draw.circle(b, skin, (32, 19), 13)
+        for hx in (1, -1):                                                       # horns
+            ox = 32 + hx * 1
+            pts = [(32 + hx * 9, 12), (32 + hx * 22, 6), (32 + hx * 24, 0), (32 + hx * 16, 12), (32 + hx * 11, 18)]
+            pygame.draw.polygon(b, (236, 224, 196), pts)
+            pygame.draw.polygon(b, (150, 130, 100), pts, 1)
+        for x, h in ((24, 8), (28, 12), (32, 14), (36, 12), (40, 8)):            # flame mane
+            pygame.draw.polygon(b, (255, 140, 40), [(x - 3, 9), (x, 9 - h), (x + 3, 9)])
+        pygame.draw.polygon(b, (255, 220, 90), [(30, 9), (32, 1), (34, 9)])
+        for ex in (26, 38):
+            b.fill((255, 220, 60), (ex - 2, 17, 5, 4))
+        pygame.draw.line(b, (30, 6, 12), (23, 14), (29, 18), 3); pygame.draw.line(b, (30, 6, 12), (41, 14), (35, 18), 3)
+        pygame.draw.rect(b, (40, 8, 14), (26, 26, 12, 5))
+        for x in (27, 33):
+            pygame.draw.polygon(b, (245, 245, 230), [(x, 26), (x + 3, 26), (x + 1, 31)])
         s = new(64, 64)
         s.blit(b, (0, f))
         return s
