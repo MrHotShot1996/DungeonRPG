@@ -7,8 +7,13 @@
    - If pygame is missing, main.py installs it for you automatically.
 
 ## Pick your hero (7 classes, 20 floors)
-Knight, Ghala the Mage (pink!), Rogue, Cleric, Necromancer (raises the dead), Beastmaster (calls beasts),
+Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
+The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a
+War Cry, and grows his sword with Greatblade (more damage and reach - press it again to throw blade waves).
+The Vampire Lord drains blood from monsters to heal a little (Blood Drain), sinks into a Blood Pool where nothing
+can hurt him while monsters standing on it take damage, and throws a Blood Curse: cursed monsters take 25% more
+damage from you, then burst after 4 seconds - the more you hurt them, the bigger the burst - and the burst heals you.
 Ghala throws a Frozen Heart that freezes a monster solid, and spins a damaging Flower Ring around herself.
 Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
 Hold the Stats button to see your numbers.
@@ -26,8 +31,21 @@ Each floor has its own look (frozen catacombs, drowned temple, fungal depths, bl
 
 ## The Shop
 Every time you take the stairs to a new floor, the Shop opens so you can spend the gold you picked up:
-more potions, permanent +HP/+damage/+speed upgrades. Prices go up a little each floor. You can also open
+permanent +HP/+damage/+speed upgrades. Prices go up a little each floor. You can also open
 it anytime from the Pause menu, and leave empty-handed if you'd rather save your gold.
+
+## Healing (there are no potions)
+- **Every kill** heals 0.5% of your maximum health (it adds up while you fight).
+- **Between floors**, the Shop has **Refill Health**: pay gold to heal back to full. You only pay for the
+  health you are missing, and if you can't afford all of it you get as much as your gold buys.
+  (This offer only shows up between floors, not in the Pause-menu shop.)
+- You still get a little health back for free when you take the stairs and when you level up.
+
+## Difficulty and speed
+- Want the game easier or harder? Open `settings.py` and change the numbers in the **DIFFICULTY** block
+  (monster health, damage, speed, how many monsters per room, how much you heal for free).
+- The game draws in step with your monitor (60 FPS on a 60 Hz screen, up to 144 on a fast one).
+  Press **F3** to show the FPS counter.
 
 ## Keyboard controls (default)
 | Key | What it does |
@@ -36,12 +54,12 @@ it anytime from the Pause menu, and leave empty-handed if you'd rather save your
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
 | SHIFT | Dash (you can't be hurt for a moment) |
-| Q | Drink a potion |
 | E | Go down the stairs |
 | TAB (hold) | Show your stats |
 | P / ESC | Pause |
 | M | Mute / unmute |
 | F11 | Full screen |
+| F3 | Show / hide the FPS counter |
 
 ## PS5 controller (DualSense) - how to connect it
 **USB cable (easiest):** plug the controller into your computer with a USB-C cable. Done!
@@ -65,7 +83,6 @@ Works on Windows, Mac and Linux with no extra software. You do NOT need Steam or
 | R2 or Square | Attack |
 | L1 / R1 / L2 | Ability 1 / 2 / 3 |
 | Cross (X) | Dash |
-| Circle | Drink potion |
 | Triangle | Stairs / interact |
 | Create or Touchpad (hold) | Show stats |
 | Options | Pause |

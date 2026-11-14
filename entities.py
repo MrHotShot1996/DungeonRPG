@@ -2,7 +2,8 @@
 import math
 import random
 import pygame
-from settings import TILE
+from settings import (TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
+                      HURT_INVULN)
 from classes import CLASSES
 
 V2 = pygame.Vector2
@@ -42,8 +43,9 @@ class Player(Entity):
         self.cls = cls
         self.max_hp = self.hp = c['hp']
         self.dmg, self.speed, self.crit = c['dmg'], c['speed'], c['crit']
-        self.dash_cd_base, self.potion_frac = c['dash_cd'], c['potion_frac']
+        self.dash_cd_base = c['dash_cd']
         self.kill_heal = c.get('kill_heal', 0)
+        self.heal_bank = 0.0         # every kill adds a sliver of health here; whole points get paid out
         self.cd_mult, self.ap = 1.0, 1.0
         self.level, self.xp = 1, 0
         self.xp_next = xp_for(1)
@@ -52,7 +54,11 @@ class Player(Entity):
         self.dash_t = self.dash_cd = 0.0
         self.dash_vec = V2(0, 0)
         self.kx = self.ky = 0.0
-        self.potions, self.gold, self.kills = 1, 0, 0
+        self.gold, self.kills = 0, 0
+        self.combo = 0               # Swordsman: how many Triple Slash swipes have been done so far
+        self.blade_wave = False      # Swordsman: True while the Greatblade recast (blade waves) is unused
+        self.pool_tick = 0.0         # Vampire Lord: time until the Blood Pool hurts monsters again
+        self.pooled = False          # ...and whether we were in the pool last frame (to pop back out)
         self.ability_cd = [0.0, 0.0, 0.0]
         self.ability_max = [1.0, 1.0, 1.0]
         self.buffs = {}
@@ -63,10 +69,6 @@ class Player(Entity):
         self.hurt_flash = 0.0
         self.anim = 0.0
         self.moving = False
-
-    @property
-    def potion_heal(self):
-        return int(self.max_hp * self.potion_frac)
 
     @property
     def dir_name(self):
@@ -89,6 +91,9 @@ class Player(Entity):
             self.fly_to_mark(dt, game)
             return
 
+        pooled = self.buffs.get('pool', 0) > 0       # Vampire Lord sunk into the Blood Pool: can't be hurt,
+        if pooled:                                   # but can't attack or dash either (walking is fine)
+            self.invuln = max(self.invuln, 0.12)
         sp = self.speed * (0.5 if self.slow_t > 0 else 1.0)
         vec = inp.move_vector()                      # length 0..1  (a gentle stick push = a slow walk)
         self.moving = vec.length_squared() > 0.0004
@@ -99,7 +104,7 @@ class Player(Entity):
         if aim is not None:
             self.face = V2(aim)
 
-        if inp.held('dash') and self.dash_cd <= 0 and self.dash_t <= 0:
+        if inp.held('dash') and self.dash_cd <= 0 and self.dash_t <= 0 and not pooled:
             self.dash_t, self.dash_cd = 0.16, self.dash_cd_base
             self.dash_vec = V2(vec).normalize() if self.moving else V2(self.face)
             self.invuln = max(self.invuln, 0.22)
@@ -108,7 +113,8 @@ class Player(Entity):
         if self.dash_t > 0:
             self.dash_t -= dt
             v = self.dash_vec * self.speed * 3.3
-            game.burst(self.x, self.y + 6, (170, 190, 255), 2, 40, glow=True)
+            if random.random() < game.fx:
+                game.burst(self.x, self.y + 6, (170, 190, 255), 2, 40, glow=True)
         else:
             v = vec * sp
         self.move(v.x * dt, v.y * dt, game.dungeon)
@@ -120,7 +126,7 @@ class Player(Entity):
         else:
             self.kx = self.ky = 0.0
 
-        if (inp.held('attack') or inp.stick_attacking()) and self.attack_cd <= 0:
+        if (inp.held('attack') or inp.stick_attacking()) and self.attack_cd <= 0 and not pooled:
             game.player_attack()
 
     def fly_to_mark(self, dt, game):
@@ -139,7 +145,8 @@ class Player(Entity):
         self.moving = False
         step = min(950 * dt, max(0.0, dist - reach))
         self.move(dx / dist * step, dy / dist * step, game.dungeon)
-        game.burst(self.x, self.y + 4, (255, 235, 150), 3, 60, glow=True)
+        if random.random() < game.fx:
+            game.burst(self.x, self.y + 4, (255, 235, 150), 3, 60, glow=True)
         if math.hypot(e.x - self.x, e.y - self.y) <= reach + 4:
             self.launch, self.launch_t = None, 0.0
             game.sky_strike_land(e)
@@ -156,7 +163,7 @@ class Player(Entity):
             return
         dmg = max(1, int(dmg))
         self.hp -= dmg
-        self.invuln = 0.9
+        self.invuln = HURT_INVULN
         self.hurt_flash = 0.45
         d = V2(self.x - sx, self.y - sy)
         d = d.normalize() if d.length_squared() else V2(0, 1)
@@ -204,9 +211,11 @@ class Enemy(Entity):
         deep = max(0, floor - 10)                                 # after floor 10 they grow a little slower
         hp_scale = 1.0 if boss else 1 + 0.33 * (min(floor, 10) - 1) + 0.20 * deep       # monsters get tougher every floor!
         dmg_scale = 1.0 if boss else 1 + 0.16 * (min(floor, 10) - 1) + 0.09 * deep
+        hp_scale *= BOSS_HP_MULT if boss else ENEMY_HP_MULT       # the difficulty knobs from settings.py
+        dmg_scale *= BOSS_DMG_MULT if boss else ENEMY_DMG_MULT
         self.max_hp = self.hp = int(d['hp'] * hp_scale * (2.2 if self.elite else 1.0))
         self.dmg = int(d['dmg'] * dmg_scale * (1.25 if self.elite else 1.0))
-        self.speed = d['speed'] * min(1.3, 1 + 0.03 * (floor - 1))
+        self.speed = d['speed'] * min(1.3, 1 + 0.03 * (floor - 1)) * (1.0 if boss else ENEMY_SPEED_MULT)
         self.xp = int(d['xp'] * (1 + 0.22 * (floor - 1)) * (2.5 if self.elite else 1.0))
         self.sight = d['sight']
         self.awake = False
@@ -219,6 +228,8 @@ class Enemy(Entity):
         self.stun_t = self.slow_t = self.poison_t = 0.0
         self.freeze_t = 0.0        # frozen solid (Ghala's Frozen Heart)
         self.petal_cd = 0.0        # how soon Ghala's flower ring may hit this monster again
+        self.curse_t = 0.0         # Vampire Lord's Blood Curse: seconds until this monster BURSTS
+        self.curse_dmg = 0.0       # ...and how much damage it has taken while cursed (makes the burst bigger)
         self.poison_dps, self.poison_tick = 0.0, 0.5
         self.state = 'chase'
         self.state_t = random.uniform(1.0, 2.5)
@@ -278,8 +289,7 @@ class Enemy(Entity):
 
         dpl = math.hypot(p.x - self.x, p.y - self.y) or 1.0
         if not self.awake:
-            see = d.line_clear(self.x, self.y, p.x, p.y) or self.kind == 'wraith'
-            if dpl < self.sight and see:
+            if dpl < self.sight and (self.kind == 'wraith' or d.line_clear(self.x, self.y, p.x, p.y)):
                 self.awake = True
                 if self.kind in BOSS_KINDS:
                     game.audio.play('boss'); game.shake = 0.6
@@ -617,14 +627,11 @@ MINION_TYPES = {
     'skeleton':  dict(hp=45,  speed=110, mult=0.9, size=22, role='melee',  cd=0.7),
     'archer':    dict(hp=30,  speed=95,  mult=0.75, size=22, role='ranged', cd=1.3),
     'bonebrute': dict(hp=130, speed=72,  mult=1.5, size=30, role='melee',  cd=1.0),
-    'wolf':      dict(hp=70,  speed=165, mult=0.8, size=22, role='melee',  cd=0.55),
-    'hawk':      dict(hp=38,  speed=190, mult=1.1, size=18, role='swoop',  cd=1.6),
-    'bear':      dict(hp=280, speed=95,  mult=1.6, size=34, role='cleave', cd=1.0),
 }
 
 
 class Minion(Entity):
-    """A friend that fights FOR you: raised undead or summoned beasts."""
+    """A friend that fights FOR you: the undead a Necromancer raises."""
     def __init__(self, kind, x, y, level, life=None, group='undead'):
         d = MINION_TYPES[kind]
         super().__init__(x, y, d['size'], d['size'])
@@ -702,19 +709,14 @@ class Minion(Entity):
             dist = math.hypot(dx, dy) or 1.0
             nx, ny = dx / dist, dy / dist
             touch = (t.w + self.w) / 2 + 6
-            if self.role in ('melee', 'cleave'):
+            if self.role == 'melee':
                 if dist > touch - 4:
                     mx, my = nx * sp, ny * sp
-                if self.cd <= 0 and dist < touch + (26 if self.role == 'cleave' else 4):
+                if self.cd <= 0 and dist < touch + 4:
                     self.cd = self.cd_base
                     self.lunge = 0.14
                     self.vec = (nx, ny)
-                    if self.role == 'cleave':
-                        game.audio.play('roar') if random.random() < 0.3 else None
-                        game.aoe(self.x, self.y, 62, dmg, knock=170, color=(235, 190, 120), ring=False)
-                        game.burst(self.x + nx * 20, self.y + ny * 20, (240, 210, 160), 8, 140)
-                    else:
-                        game.minion_hit(self, t, dmg)
+                    game.minion_hit(self, t, dmg)
             elif self.role == 'ranged':
                 if dist > 230:
                     mx, my = nx * sp, ny * sp
@@ -726,27 +728,6 @@ class Minion(Entity):
                     self.vec = (nx, ny)
                     game.bolts.append(Bolt(self.x, self.y, nx * 380, ny * 380, dmg, (225, 235, 255), 4, 1.2, kind='arrow'))
                     game.audio.play('shoot')
-            elif self.role == 'swoop':                  # hawk: circle, dive, retreat
-                if self.state == 'circle':
-                    self.orbit += dt * 3.2
-                    gx, gy = t.x + math.cos(self.orbit) * 95, t.y + math.sin(self.orbit) * 95
-                    gd = math.hypot(gx - self.x, gy - self.y) or 1
-                    mx, my = (gx - self.x) / gd * sp, (gy - self.y) / gd * sp
-                    if self.state_t <= 0 and self.cd <= 0:
-                        self.state, self.state_t, self.vec = 'dive', 0.5, (nx, ny)
-                        game.audio.play('screech') if random.random() < 0.5 else None
-                elif self.state == 'dive':
-                    mx, my = self.vec[0] * sp * 2.4, self.vec[1] * sp * 2.4
-                    if self.rect.colliderect(t.rect):
-                        self.cd = self.cd_base
-                        game.minion_hit(self, t, dmg)
-                        self.state, self.state_t = 'retreat', 0.6
-                    elif self.state_t <= 0:
-                        self.state, self.state_t = 'retreat', 0.5
-                else:
-                    mx, my = -nx * sp, -ny * sp
-                    if self.state_t <= 0:
-                        self.state, self.state_t = 'circle', random.uniform(0.6, 1.4)
             if abs(nx) > 0.2:
                 self.face_left = nx < 0
         if t is None and abs(mx) > 6:
@@ -772,7 +753,7 @@ class Projectile:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.life -= dt
-        if random.random() < 0.5:
+        if random.random() < 0.5 * game.fx:
             game.particles.append(Particle(self.x, self.y, 0, 0, 0.3, self.color, 3, glow=True))
         if self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):
             self.alive = False
@@ -810,7 +791,7 @@ class Bolt:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.life -= dt
-        if random.random() < 0.8:
+        if random.random() < 0.8 * game.fx:
             game.particles.append(Particle(self.x, self.y, random.uniform(-20, 20), random.uniform(-20, 20),
                                            0.3, self.color, 3, glow=True))
         if self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):

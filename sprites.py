@@ -139,9 +139,6 @@ class Sprites:
             'skeleton': [tint(x, (150, 255, 200)) for x in sk],
             'archer': [tint(x, (170, 200, 255)) for x in ar],
             'bonebrute': [gray_tint(x, (235, 235, 215)) for x in bb],
-            'wolf': [self._wolf(f) for f in (0, 1)],
-            'hawk': [self._hawk(f) for f in (0, 1)],
-            'bear': [self._bear(f) for f in (0, 1)],
         }
         self.minion = {}
         for k, frames in self.minion_raw.items():
@@ -151,7 +148,6 @@ class Sprites:
             self.foot[('m', k)] = outs[0][1]
         # ---- items & misc
         self.coin = [stylize(self._coin(f), 1.1)[0] for f in range(4)]
-        self.potion = stylize(self._potion(), 1.15)[0]
         self.chest = [stylize(self._chest(o), 1.2)[0] for o in (False, True)]
         self.stairs = self._stairs()
         self._slash_base = self._make_slash()
@@ -236,12 +232,13 @@ class Sprites:
         pygame.draw.rect(s, (230, 200, 60), (18, 25, 4, 3))
         pygame.draw.rect(s, pal['trim'], (7, 16, 5, 11), border_radius=2)
         pygame.draw.rect(s, pal['trim'], (28, 16, 5, 11), border_radius=2)
-        pygame.draw.circle(s, SKIN, (9, 28), 3)
-        pygame.draw.circle(s, SKIN, (31, 28), 3)
+        skin = pal.get('skin', SKIN)
+        pygame.draw.circle(s, skin, (9, 28), 3)
+        pygame.draw.circle(s, skin, (31, 28), 3)
         if pal.get('collar'):
             pygame.draw.ellipse(s, pal['collar'], (10, 13, 20, 7))
         dark_face = pal.get('face') == 'dark'
-        face = (12, 8, 18) if dark_face else SKIN
+        face = (12, 8, 18) if dark_face else skin
         eye = pal.get('orb', (130, 255, 160)) if dark_face else (30, 30, 40)
         head = pal['head']
         if head == 'hood':
@@ -263,8 +260,6 @@ class Sprites:
             pygame.draw.rect(s, pal['plume'], (px, 0, 4, 4))
         if pal.get('feather'):
             pygame.draw.polygon(s, pal['feather'], [(26, 7), (32, 1), (30, 9)])
-        if cls == 'cleric':
-            pygame.draw.rect(s, (255, 255, 255), (19, 1, 2, 6)); pygame.draw.rect(s, (255, 255, 255), (17, 3, 6, 2))
         self._weapon(s, pal, d)
         return s
 
@@ -295,6 +290,11 @@ class Sprites:
                 pygame.draw.rect(s, (210, 215, 225), (32, 19, 2, 8)); pygame.draw.rect(s, (120, 80, 40), (30, 26, 6, 2))
             else:
                 pygame.draw.rect(s, (210, 215, 225), (30, 20, 7, 2)); pygame.draw.rect(s, (120, 80, 40), (28, 18, 2, 6))
+        elif w == 'orb':                                  # a little ball of blood floating by the hand
+            ox, oy = (33, 22) if vertical else (35, 20)
+            pygame.draw.circle(s, shade(orb, 0.55), (ox, oy), 5)
+            pygame.draw.circle(s, orb, (ox, oy), 4)
+            s.fill((255, 200, 210), (ox - 2, oy - 2, 2, 2))
         elif w == 'bow':
             pygame.draw.arc(s, (140, 92, 48), pygame.Rect(26, 8, 14, 26), -1.25, 1.25, 3)
             pygame.draw.line(s, (235, 235, 225), (33, 9), (33, 33), 1)
@@ -568,64 +568,6 @@ class Sprites:
         s.blit(b, (0, f))
         return s
 
-    # ------------------------------------------------------------------ ALLIES: beasts
-    def _wolf(self, f):
-        s = new()
-        col, dk, lt = (128, 132, 146), (82, 86, 100), (200, 202, 215)
-        lo = 3 if f else 0
-        for x, o in ((9, lo), (15, 3 - lo), (24, 3 - lo), (30, lo)):
-            pygame.draw.rect(s, dk, (x, 27, 4, 9 - o))
-        pygame.draw.polygon(s, col, [(8, 19), (0, 11 + f * 3), (3, 24)])
-        pygame.draw.ellipse(s, col, (6, 15, 27, 16))
-        pygame.draw.ellipse(s, lt, (10, 24, 19, 6))
-        pygame.draw.circle(s, col, (30, 14), 7)
-        pygame.draw.polygon(s, dk, [(31, 7), (32, 0), (36, 8)])
-        pygame.draw.ellipse(s, lt, (31, 14, 8, 6))
-        s.fill((20, 20, 24), (38, 15, 2, 2))
-        s.fill((255, 215, 60), (32, 11, 2, 2))
-        pygame.draw.line(s, (240, 240, 240), (34, 19), (35, 21), 1)
-        return s
-
-    def _hawk(self, f):
-        s = new()
-        wing, wd = (150, 100, 58), (105, 68, 38)
-        if f == 0:
-            lw = [(16, 18), (1, 6), (3, 16), (6, 22), (12, 24)]
-        else:
-            lw = [(16, 18), (1, 26), (6, 31), (10, 28), (13, 24)]
-        rw = [(TILE - x, y) for x, y in lw]
-        pygame.draw.polygon(s, wing, lw); pygame.draw.polygon(s, wing, rw)
-        for i in range(3):
-            y0 = lw[1][1] + (6 if f == 0 else -6)
-            pygame.draw.line(s, wd, (14 - i * 3, 20), (3 + i * 2, y0 + i * 3), 1)
-            pygame.draw.line(s, wd, (26 + i * 3, 20), (37 - i * 2, y0 + i * 3), 1)
-        pygame.draw.polygon(s, wd, [(16, 28), (24, 28), (27, 37), (13, 37)])
-        pygame.draw.line(s, (230, 220, 200), (16, 33), (24, 33), 1)
-        pygame.draw.ellipse(s, (160, 108, 62), (14, 13, 12, 16))
-        pygame.draw.circle(s, (235, 215, 175), (20, 12), 6)
-        pygame.draw.polygon(s, (250, 200, 50), [(18, 14), (22, 14), (20, 20)])
-        s.fill((20, 20, 20), (17, 10, 2, 2)); s.fill((20, 20, 20), (22, 10, 2, 2))
-        return s
-
-    def _bear(self, f):
-        s = new(48, 48)
-        col, dk, lt = (128, 84, 52), (86, 54, 32), (190, 150, 105)
-        lo = 3 if f else 0
-        for x, o in ((9, lo), (17, 3 - lo), (28, 3 - lo), (35, lo)):
-            pygame.draw.rect(s, dk, (x, 33, 8, 12 - o), border_radius=2)
-            s.fill((235, 235, 225), (x + 1, 43 - o, 2, 2)); s.fill((235, 235, 225), (x + 5, 43 - o, 2, 2))
-        pygame.draw.ellipse(s, col, (3, 12, 36, 28))
-        pygame.draw.ellipse(s, dk, (6, 12, 14, 10))
-        pygame.draw.circle(s, col, (36, 19), 10)
-        for ex, ey in ((31, 9), (41, 10)):
-            pygame.draw.circle(s, dk, (ex, ey), 4)
-            pygame.draw.circle(s, lt, (ex, ey), 2)
-        pygame.draw.ellipse(s, lt, (37, 19, 10, 8))
-        pygame.draw.circle(s, (20, 18, 22), (45, 21), 2)
-        s.fill((20, 18, 22), (36, 16, 2, 3))
-        pygame.draw.line(s, (20, 18, 22), (41, 27), (43, 27), 1)
-        return s
-
     # ------------------------------------------------------------------ ITEMS
     def _coin(self, f):
         s = new()
@@ -634,15 +576,6 @@ class Sprites:
         pygame.draw.ellipse(s, (180, 130, 20), (20 - w // 2, 14, w, 14), 2)
         if w > 6:
             pygame.draw.ellipse(s, (255, 240, 150), (20 - w // 2 + 3, 17, max(2, w - 6), 7))
-        return s
-
-    def _potion(self):
-        s = new()
-        pygame.draw.ellipse(s, (225, 50, 75), (12, 16, 16, 15))
-        pygame.draw.rect(s, (205, 210, 225), (18, 10, 4, 8))
-        pygame.draw.rect(s, (130, 80, 40), (17, 8, 6, 3))
-        pygame.draw.ellipse(s, (255, 170, 190), (15, 19, 4, 5))
-        pygame.draw.ellipse(s, (255, 255, 255), (12, 16, 16, 15), 1)
         return s
 
     def _chest(self, opened):
@@ -933,12 +866,10 @@ def make_icon(icon, color, size=56):
                 P.circle(s, c, (int(fx + math.cos(b) * L(4)), int(fy + math.sin(b) * L(4))), L(3))
             P.circle(s, (255, 230, 110), (int(fx), int(fy)), L(2))
         P.circle(s, w, (cx, cy), L(3))
-    elif icon in ('bolt', 'smite'):
+    elif icon == 'bolt':
         pts = [(cx + L(3), cy - r - L(2)), (cx - r // 2 - L(1), cy + L(2)), (cx, cy + L(2)), (cx - L(3), cy + r + L(2)),
                (cx + r // 2 + L(1), cy - L(3)), (cx, cy - L(3))]
         P.polygon(s, c, pts); P.polygon(s, w, pts, L(1))
-        if icon == 'smite':
-            P.ellipse(s, w, (cx - L(10), cy + r - L(5), L(20), L(7)), L(2))
     elif icon == 'knives':
         for off in (-7, 0, 7):
             P.line(s, c, (cx + L(off) - L(4), cy + r), (cx + L(off) + L(4), cy - r), L(3))
@@ -951,9 +882,6 @@ def make_icon(icon, color, size=56):
         P.circle(s, c, (cx, cy), r)
         for dx, dy in ((-5, -3), (4, 2), (-1, 6)):
             P.circle(s, (20, 60, 20), (cx + L(dx), cy + L(dy)), L(3))
-    elif icon == 'heal':
-        P.circle(s, (30, 70, 40), (cx, cy), r + L(1))
-        P.rect(s, c, (cx - L(3), cy - r + L(2), L(6), 2 * r - L(4))); P.rect(s, c, (cx - r + L(2), cy - L(3), 2 * r - L(4), L(6)))
     elif icon == 'nova':
         for k in (r, r - L(5), r - L(10)):
             if k > 1:
@@ -973,18 +901,6 @@ def make_icon(icon, color, size=56):
     elif icon == 'army':
         for dx, dy, rr in ((0, -8, 9), (-11, 7, 8), (11, 7, 8)):
             _skull(s, cx + L(dx), cy + L(dy), L(rr), c)
-    elif icon == 'wolf':
-        P.ellipse(s, c, (cx - L(9), cy - L(1), L(18), L(16)))
-        for dx, dy in ((-12, -8), (-4, -15), (5, -15), (13, -8)):
-            P.ellipse(s, c, (cx + L(dx) - L(4), cy + L(dy) - L(5), L(8), L(11)))
-    elif icon == 'hawk':
-        P.polygon(s, c, [(cx - r, cy + L(4)), (cx - L(6), cy - r), (cx + r, cy - L(8)), (cx + L(10), cy + L(6)), (cx + L(4), cy + r)])
-        for i in range(3):
-            P.line(s, (60, 40, 20), (cx - L(14) + i * L(7), cy + L(4) - i * L(3)), (cx - L(2) + i * L(7), cy - L(8) - i * L(3)), L(2))
-    elif icon == 'bear':
-        P.circle(s, c, (cx, cy + L(2)), r, L(3))
-        for k in (-8, 0, 8):
-            P.line(s, w, (cx + L(k) - L(4), cy - L(12)), (cx + L(k) + L(4), cy + L(14)), L(3))
     elif icon == 'fist':
         P.circle(s, c, (cx, cy + L(3)), r - L(4))
         for dx in (-10, -3, 4, 11):
@@ -1004,11 +920,48 @@ def make_icon(icon, color, size=56):
                          (cx + L(4), cy + L(10)), (cx - r // 2, cy + L(6))])
         P.line(s, w, (cx + r, cy + L(2)), (cx + r + L(14), cy + L(2)), L(4))
         P.polygon(s, w, [(cx + r + L(16), cy + L(2)), (cx + r + L(8), cy - L(5)), (cx + r + L(8), cy + L(9))])
+    elif icon in ('drain', 'curse'):                    # a drop of blood
+        k = r - L(5)
+        if icon == 'curse':                               # ...bursting
+            for ang in range(0, 360, 45):
+                a = math.radians(ang)
+                P.line(s, w, (cx + math.cos(a) * (r - L(2)), cy + L(3) + math.sin(a) * (r - L(2))),
+                       (cx + math.cos(a) * (r + L(7)), cy + L(3) + math.sin(a) * (r + L(7))), L(2))
+        P.circle(s, c, (cx, cy + L(5)), k)
+        P.polygon(s, c, [(cx - k + L(1), cy + L(1)), (cx, cy - r - L(4)), (cx + k - L(1), cy + L(1))])
+        P.circle(s, w, (cx - k // 3, cy + L(4)), max(2, k // 4))
+        if icon == 'drain':                               # ...with fangs
+            for dx in (-5, 5):
+                P.polygon(s, w, [(cx + L(dx) - L(3), cy - r - L(6)), (cx + L(dx) + L(3), cy - r - L(6)),
+                                 (cx + L(dx), cy - r + L(4))])
+    elif icon == 'pool':
+        P.ellipse(s, c, (cx - r - L(4), cy - L(4), 2 * r + L(8), r + L(8)))
+        P.ellipse(s, w, (cx - r - L(4), cy - L(4), 2 * r + L(8), r + L(8)), L(2))
+        for dx, dy, rr in ((-9, 6, 4), (6, 9, 3), (2, 2, 2)):
+            P.circle(s, w, (cx + L(dx), cy + L(dy)), L(rr), L(1))
+        P.circle(s, c, (cx, cy - L(12)), L(5))
+        P.polygon(s, c, [(cx - L(4), cy - L(14)), (cx, cy - r - L(6)), (cx + L(4), cy - L(14))])
+    elif icon == 'trislash':
+        for i, col in enumerate((c, c, w)):
+            off = L(-9 + i * 9)
+            P.arc(s, col, (cx - r + off, cy - r, 2 * r, 2 * r), -0.9, 0.9, L(4))
+    elif icon == 'warcry':
+        P.circle(s, c, (cx, cy), r, L(3))
+        P.circle(s, c, (cx, cy), r - L(8), L(2))
+        for ang in range(0, 360, 72):
+            a = math.radians(ang - 90)
+            P.circle(s, w, (int(cx + math.cos(a) * (r - L(4))), int(cy + math.sin(a) * (r - L(4)))), L(3))
+        P.circle(s, w, (cx, cy), L(4))
+    elif icon == 'blade':
+        P.line(s, c, (cx - r + L(6), cy + r - L(6)), (cx + r, cy - r), L(7))
+        P.line(s, w, (cx - r + L(8), cy + r - L(8)), (cx + r - L(1), cy - r + L(1)), L(2))
+        P.line(s, (210, 165, 45), (cx - r + L(1), cy + L(3)), (cx - L(3), cy + r - L(1)), L(4))
+        P.line(s, (150, 100, 50), (cx - r + L(6), cy + r - L(6)), (cx - r, cy + r), L(5))
     return pygame.transform.smoothscale(s, (size, size))
 
 
 def ui_icon(kind, size=24):
-    """Tiny icons for the HUD: coin, potion, dash."""
+    """Tiny icons for the HUD: coin, dash."""
     S = size * 3
     s = pygame.Surface((S, S), pygame.SRCALPHA)
     P = pygame.draw
@@ -1018,12 +971,6 @@ def ui_icon(kind, size=24):
         P.circle(s, (250, 205, 50), (m, m), S // 2 - 6)
         P.circle(s, (255, 240, 150), (m - S // 12, m - S // 12), S // 6)
         P.circle(s, (200, 150, 30), (m, m), S // 4, 3)
-    elif kind == 'potion':
-        P.ellipse(s, (225, 50, 75), (S // 5, S // 3, S * 3 // 5, S * 3 // 5))
-        P.rect(s, (205, 210, 225), (m - S // 12, S // 8, S // 6, S // 4))
-        P.rect(s, (140, 90, 45), (m - S // 10, S // 12, S // 5, S // 10))
-        P.ellipse(s, (255, 170, 190), (S // 3, S // 2, S // 8, S // 6))
-        P.ellipse(s, (255, 255, 255), (S // 5, S // 3, S * 3 // 5, S * 3 // 5), 2)
     elif kind == 'dash':
         for i, a in enumerate((255, 170, 90)):
             P.polygon(s, (170, 200, 255, a), [(S // 10 + i * S // 4, S // 4), (S // 3 + i * S // 4, m), (S // 10 + i * S // 4, S * 3 // 4), (S // 5 + i * S // 4, m)])

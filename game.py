@@ -20,7 +20,7 @@ V2 = pygame.Vector2
 # what a corpse becomes when a Necromancer raises it
 CORPSE_TO_MINION = {'slime': 'skeleton', 'bat': 'skeleton', 'goblin': 'skeleton', 'imp': 'skeleton', 'spider': 'skeleton',
                     'skeleton': 'archer', 'cultist': 'archer', 'wraith': 'archer', 'brute': 'bonebrute'}
-MINION_CAPS = {'undead': 8, 'army': 6, 'wolf': 4, 'hawk': 2, 'bear': 1}
+MINION_CAPS = {'undead': 8, 'army': 6}
 KNOCK_RESIST = {'boss': 0.2, 'warlord': 0.15, 'brute': 0.3, 'lich': 0.2, 'demon': 0.1}
 BOSS_GUARDS = {'warlord': ('goblin', 'goblin'), 'boss': ('skeleton', 'cultist', 'skeleton', 'cultist'),
                'lich': ('skeleton', 'cultist', 'skeleton', 'wraith'), 'demon': ('imp', 'brute', 'cultist', 'wraith', 'imp')}
@@ -33,7 +33,19 @@ KICK_RANGE = 150          # Monk: how close a monster must be to get kicked
 KICK_DIST = 480           # ...and how far it flies (pixels, about 12 tiles)
 KICK_SPEED = 1000         # ...how fast it flies (pixels per second)
 SKY_STRIKE_REFUND = 0.5                                # Monk: landing the jump leaves this much of the cooldown
-FREEZE_TIME = 2.5                                    # Ghala's Frozen Heart: seconds a monster stays frozen
+KILL_HEAL_FRAC = 0.005    # every kill heals this much of your max health (0.005 = 0.5%)
+REFILL_BASE, REFILL_PER_FLOOR = 20, 6   # gold for a FULL heal between floors (you only pay for what's missing)
+SLASH_RANGE, SLASH_ARC = 84, 70         # Swordsman's Triple Slash: how far it reaches, and half its width in degrees
+SLASH_WINDOW = 3.0                      # ...seconds you have to press it again for the next swipe
+WARCRY_RADIUS, WARCRY_STUN = 125, 1.0   # Swordsman's War Cry: how wide, and how long monsters stay stunned
+BLADE_TIME = 10.0                       # Swordsman's Greatblade: how long the sword stays extended
+BLADE_DMG, BLADE_RANGE = 1.3, 1.4       # ...and how much more damage / range it gives while it lasts
+DRAIN_RANGE, DRAIN_HEAL = 280, 0.03     # Vampire Lord's Blood Drain: how far it reaches, and the heal (3% of max health)
+POOL_TIME, POOL_RADIUS, POOL_TICK = 2.5, 95, 0.5    # Blood Pool: how long, how wide, seconds between each hurt
+CURSE_THROW, CURSE_RADIUS = 130, 105    # Blood Curse: how far in front it lands, and how wide the splash is
+CURSE_TIME, CURSE_AMP = 4.0, 1.25       # ...seconds until cursed monsters burst, and the extra damage they take (x1.25)
+CURSE_BURST, CURSE_HEAL = 0.4, 0.12     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 12% of the burst
+FREEZE_TIME = 2.5                                  # Ghala's Frozen Heart: seconds a monster stays frozen
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
 
@@ -56,10 +68,16 @@ class Game:
     def __init__(self):
         pygame.display.init()
         pygame.font.init()
-        try:
-            self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.SCALED | pygame.RESIZABLE)
-        except Exception:
-            self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.screen = None
+        for flags, vsync in ((pygame.SCALED | pygame.RESIZABLE, 1), (pygame.SCALED | pygame.RESIZABLE, 0), (0, 0)):
+            try:                       # vsync = draw in step with the monitor: smooth, no tearing
+                self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags, vsync=vsync)
+                break
+            except Exception:
+                continue
+        self.frame_cap = self.pick_frame_cap()
+        self.show_fps = False          # F3 shows / hides the FPS counter
+        self.fx = 1.0                  # how long this frame is, compared to a 60 FPS frame (keeps effects the same at any FPS)
         pygame.display.set_caption(TITLE)
         self.clock = pygame.time.Clock()
         # when bundled into an .exe (PyInstaller), __file__ lives in a throwaway temp
@@ -71,10 +89,12 @@ class Game:
         pygame.display.set_icon(pygame.transform.smoothscale(self.sprites.player[('knight', 'down', 0)], (32, 32)))
         self.fonts, self._text_cache, self._panels, self._masks = {}, {}, {}, {}
         self.icons = {n: make_icon(a['icon'], a['color']) for n, a in ABILITIES.items()}
-        self.ui = {'coin': ui_icon('coin', 26), 'potion': ui_icon('potion', 26), 'dash': ui_icon('dash', 26),
-                   'potion_big': ui_icon('potion', 40), 'dash_big': ui_icon('dash', 40)}
+        self.ui = {'coin': ui_icon('coin', 26), 'dash': ui_icon('dash', 26), 'dash_big': ui_icon('dash', 40)}
         self.overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.glow_layer = pygame.Surface((WIDTH // 4, HEIGHT // 4))
+        self.glow_big = pygame.Surface((WIDTH, HEIGHT))          # the glow layer blown up (made once, reused every frame)
+        self.dim_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.band_img = None                                     # the dark stripe behind banners (made once)
         self.vignette = self.make_vignette((0, 0, 0), 215)
         self.vignette_red = self.make_vignette((150, 0, 10), 235)
         self.mote_img = self.sprites.glow(5, (255, 255, 255), 1.0)
@@ -114,9 +134,30 @@ class Game:
         self.level_surf = None
         self.backdrop = self.build_backdrop()
 
+    def pick_frame_cap(self):
+        """How many frames per second to aim for: your monitor's speed, but never more than FPS in settings.py."""
+        hz = 0
+        try:
+            hz = int(pygame.display.get_current_refresh_rate())
+        except Exception:
+            pass
+        if hz < 50:                    # unknown (or a strange answer): assume a normal 60 Hz screen
+            hz = 60
+        vsync = False
+        try:
+            vsync = bool(pygame.display.is_vsync())
+        except Exception:
+            pass
+        if vsync and hz <= FPS:        # the monitor sets the pace; our own limit is only a safety net above it
+            return int(hz * 1.25)
+        return max(30, min(hz, FPS))
+
     def reset_lists(self):
         self.enemies, self.items, self.projectiles, self.bolts = [], [], [], []
         self.flung = []                                   # monsters flying through the air from a Dragon's Kick
+        self.sweeps = []                                  # the Swordsman's sword arcs (just for looks)
+        self.drops = []                                   # Vampire Lord: blood flying back to you
+        self.splashes = []                                # ...and the blood thrown on the floor by Blood Curse
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
 
     # ------------------------------------------------------------ pretty-picture helpers
@@ -257,8 +298,8 @@ class Game:
         pygame.draw.rect(scr, (230, 220, 200), (x, y, w, h), 2, border_radius=h // 2)
 
     def dim(self, color, alpha):
-        s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        s.fill((*color, alpha))
+        s = self.dim_surf                              # one reusable sheet (making a new one every frame is slow)
+        s.fill((*color, max(0, min(255, int(alpha)))))
         self.screen.blit(s, (0, 0))
 
     # ------------------------------------------------------------ run setup
@@ -286,7 +327,7 @@ class Game:
 
         w = spawn_weights(self.floor)
         kinds, weights = list(w.keys()), list(w.values())
-        elite_chance = 0 if self.floor == 1 else min(0.28, 0.05 + 0.03 * (self.floor - 1))
+        elite_chance = 0 if self.floor == 1 else min(ELITE_CHANCE_MAX, 0.06 + 0.035 * (self.floor - 1))
         for i, room in enumerate(rooms[1:], start=1):
             is_last = (i == len(rooms) - 1)
             if boss_kind and is_last:
@@ -296,7 +337,8 @@ class Game:
                     x, y = self.dungeon.random_spot(room)
                     self.enemies.append(Enemy(kind, x, y, self.floor))
                 continue
-            count = min(7, random.randint(1, 2) + self.floor // 2 + (1 if self.floor >= 8 else 0))
+            count = min(MAX_MONSTERS_PER_ROOM, random.randint(1, 2) + self.floor // 2 + (1 if self.floor >= 8 else 0)
+                        + (1 if self.floor >= EXTRA_MONSTERS_FROM_FLOOR else 0))
             for _ in range(count):
                 kind = random.choices(kinds, weights)[0]
                 x, y = self.dungeon.random_spot(room)
@@ -309,10 +351,6 @@ class Game:
                     self.items.append(Item('coin', x, y, random.randint(2, 5) * self.floor))
             if random.random() < 0.4:
                 self.items.append(Item('chest', *self.dungeon.random_spot(room)))
-            if random.random() < 0.25:
-                self.items.append(Item('potion', *self.dungeon.random_spot(room)))
-        mid = rooms[len(rooms) // 2]
-        self.items.append(Item('potion', *self.dungeon.random_spot(mid)))
 
         self.stairs = None
         if self.floor < MAX_FLOOR:
@@ -503,25 +541,32 @@ class Game:
         p.swing = 0.16
         self.audio.play('swing')
         f = p.face
-        hs = c['hitsize']
+        big = self.blade_on()                                   # Swordsman's Greatblade: bigger, harder swings
+        hs = int(c['hitsize'] * self.blade_reach())
+        reach = c['reach'] * self.blade_reach()
         hit = pygame.Rect(0, 0, hs, hs)
-        hit.center = (p.x + f.x * c['reach'], p.y + f.y * c['reach'])
+        hit.center = (p.x + f.x * reach, p.y + f.y * reach)
         for e in self.enemies[:]:
             if hit.colliderect(e.rect):
-                self.damage_enemy(e, p.dmg + random.randint(-2, 2))
+                self.damage_enemy(e, (p.dmg + random.randint(-2, 2)) * (BLADE_DMG if big else 1.0))
         for pr in self.projectiles:   # slash can swat away arrows!
             if hit.collidepoint(pr.x, pr.y):
                 pr.alive = False
                 self.audio.play('deflect')
                 self.burst(pr.x, pr.y, (255, 255, 200), 5, 80, glow=True)
 
-    def damage_enemy(self, e, dmg, crit=None, knock=True, origin=None, leech=False, dot=False, push=None):
+    def damage_enemy(self, e, dmg, crit=None, knock=True, origin=None, leech=False, dot=False, push=None, curse=True):
         p = self.player
         if crit is None:
             crit = random.random() < p.crit
         if crit:
             dmg *= 2
+        cursed = curse and e.curse_t > 0             # Vampire Lord's Blood Curse: it takes MORE damage...
+        if cursed:
+            dmg *= CURSE_AMP
         dmg = int(dmg)
+        if cursed:
+            e.curse_dmg += dmg                       # ...and remembers it, for a bigger burst at the end
         e.hp -= dmg
         e.awake = True
         if dot:
@@ -628,16 +673,18 @@ class Game:
             self.corpses.append(Corpse(e.kind, e.x, e.y))
             if len(self.corpses) > 24:
                 self.corpses.pop(0)
-        if p.kill_heal and p.hp < p.max_hp:
-            p.hp = min(p.max_hp, p.hp + p.kill_heal)
-            self.float_text(p.x, p.y - 30, f"+{p.kill_heal}", (130, 255, 160))
+        if p.hp > 0:                                    # every kill gives back a little health
+            p.heal_bank += p.max_hp * KILL_HEAL_FRAC    # usually less than 1 HP, so it is saved up...
+            heal = int(p.heal_bank) + p.kill_heal       # ...and paid out in whole points (+ the Necromancer's bonus)
+            p.heal_bank -= int(p.heal_bank)
+            if heal and p.hp < p.max_hp:
+                p.hp = min(p.max_hp, p.hp + heal)
+                self.float_text(p.x, p.y - 30, f"+{heal}", (130, 255, 160))
         if random.random() < (0.5 if not e.elite else 1.0) or e.kind in ('boss', 'brute', 'warlord'):
             n = random.randint(1, 3) if e.kind not in BOSS_KINDS else 10
             for _ in range(n + (3 if e.elite else 0)):
                 self.items.append(Item('coin', e.x + random.randint(-18, 18), e.y + random.randint(-18, 18),
                                        random.randint(3, 8) * self.floor))
-        if random.random() < (0.12 if not e.elite else 0.45) or e.kind == 'warlord':
-            self.items.append(Item('potion', e.x, e.y))
         self.float_text(e.x, e.y - 36, f"+{e.xp} XP", (140, 195, 255))
         while p.xp >= p.xp_next:
             p.xp -= p.xp_next
@@ -665,8 +712,6 @@ class Game:
                 for _ in range(8):
                     self.items.append(Item('coin', e.x + random.randint(-40, 40), e.y + random.randint(-40, 40),
                                            random.randint(6, 12) * self.floor))
-                self.items.append(Item('potion', e.x + 20, e.y))
-                self.items.append(Item('potion', e.x - 20, e.y))
 
     def level_up(self):
         """Leveling up is AUTOMATIC: every hero grows a little stronger each level."""
@@ -683,7 +728,7 @@ class Game:
             p.cd_mult = max(0.5, p.cd_mult * 0.92)
             p.ap += 0.1
             lines.append("Abilities stronger!")
-        p.hp = min(p.max_hp, p.hp + int(p.max_hp * 0.3))
+        p.hp = min(p.max_hp, p.hp + int(p.max_hp * LEVELUP_HEAL))
         self.audio.play('levelup2')
         self.rumble(0.5, 350)
         self.float_text(p.x, p.y - 46, "LEVEL UP!", (255, 235, 110), big=True)
@@ -701,16 +746,6 @@ class Game:
         self.state = 'dead'
         self.audio.play('gameover')
 
-    def drink_potion(self):
-        p = self.player
-        if p.potions > 0 and p.hp < p.max_hp:
-            p.potions -= 1
-            h = p.potion_heal
-            p.hp = min(p.max_hp, p.hp + h)
-            self.audio.play('potion')
-            self.float_text(p.x, p.y - 26, f"+{h} HP", (110, 255, 130))
-            self.burst(p.x, p.y, (255, 100, 130), 14, 100, glow=True)
-
     def try_descend(self):
         p = self.player
         if self.stairs and math.hypot(p.x - self.stairs[0], p.y - self.stairs[1]) < 40:
@@ -720,7 +755,7 @@ class Game:
                 return
             self.audio.play('stairs')
             self.floor += 1
-            p.hp = min(p.max_hp, p.hp + int(p.max_hp * 0.2))
+            p.hp = min(p.max_hp, p.hp + int(p.max_hp * STAIRS_HEAL))
             self.build_floor()
             self.open_shop('playing')
 
@@ -784,8 +819,17 @@ class Game:
             return
         if p.launch_t > 0:                # already flying at the mark
             return
+        if p.buffs.get('pool', 0) > 0:    # sunk into the Blood Pool
+            return
         if name == 'sky_strike' and self.sky_recast_ready():
             self.ab_sky_strike_recast()   # free follow-up, doesn't touch the cooldown
+            return
+        if name == 'triple_slash' and self.combo_ready():
+            if p.buffs.get('combo_gap', 0) <= 0:      # swipe 2 and 3 are free too (tiny pause between them)
+                self.slash_step()
+            return
+        if name == 'greatblade' and self.blade_wave_ready():
+            self.ab_blade_wave()          # second press while the sword is extended: throw blade waves
             return
         if p.ability_cd[slot] > 0:
             return
@@ -801,7 +845,22 @@ class Game:
 
     def power(self, mult):
         p = self.player
-        return p.dmg * mult * p.ap
+        return p.dmg * mult * p.ap * (BLADE_DMG if self.blade_on() else 1.0)
+
+    def blade_on(self):
+        """True while the Swordsman's Greatblade is extended (more damage, longer reach)."""
+        return self.player.buffs.get('greatblade', 0) > 0
+
+    def blade_reach(self):
+        return BLADE_RANGE if self.blade_on() else 1.0
+
+    def blade_wave_ready(self):
+        return self.blade_on() and self.player.blade_wave
+
+    def combo_ready(self):
+        """True while the Swordsman is in the middle of a Triple Slash (so ability 1 swipes again)."""
+        p = self.player
+        return 0 < p.combo < 3 and p.buffs.get('combo', 0) > 0
 
     def nearest_enemies(self, x, y, max_dist, count, need_los=True):
         out = []
@@ -952,35 +1011,6 @@ class Game:
         self.aoe(cx, cy, 110, self.power(0.5), knock=60, poison=self.power(0.6), poison_t=6.0, color=(110, 220, 90))
         self.burst(cx, cy, (110, 220, 90), 35, 150, glow=True)
 
-    # -- Cleric
-    def ab_smite(self):
-        p = self.player
-        targets = self.nearest_enemies(p.x, p.y, 380, 3, need_los=False)
-        if not targets:
-            self.float_text(p.x, p.y - 30, "No targets!", (200, 200, 200))
-            return False
-        self.audio.play('zap')
-        for e in targets:
-            self.zaps.append([[(e.x - 8, e.y - 320), (e.x + 6, e.y - 160), (e.x, e.y)], 0.3, 0.3, (255, 235, 140)])
-            self.aoe(e.x, e.y, 45, self.power(2.2), knock=100, stun=0.6, color=(255, 225, 110))
-
-    def ab_heal(self):
-        p = self.player
-        amt = int(p.max_hp * 0.35)
-        p.hp = min(p.max_hp, p.hp + amt)
-        self.audio.play('heal')
-        self.float_text(p.x, p.y - 28, f"+{amt} HP", (110, 255, 130), big=True)
-        self.burst(p.x, p.y, (120, 255, 160), 18, 120, glow=True)
-        self.burst(p.x, p.y, (255, 235, 150), 10, 90, glow=True)
-        self.flash_light(p.x, p.y, 180, (120, 255, 160), 0.7, 0.5)
-
-    def ab_holy_nova(self):
-        p = self.player
-        self.audio.play('nova')
-        self.aoe(p.x, p.y, 150, self.power(1.5), knock=340, color=(255, 240, 170))
-        p.hp = min(p.max_hp, p.hp + 8)
-        self.burst(p.x, p.y, (255, 240, 170), 25, 200, glow=True)
-
     # -- Necromancer
     def ab_raise_dead(self):
         p = self.player
@@ -1017,31 +1047,6 @@ class Game:
             a = i * 6.2832 / 5
             self.summon('skeleton', p.x + math.cos(a) * 70, p.y + math.sin(a) * 70, 'army', life=18.0)
         self.float_text(p.x, p.y - 36, "ARISE!", (170, 160, 255), big=True)
-
-    # -- Beastmaster
-    def _spawn_beasts(self, kind, group, n, cap, full_msg, sound):
-        p = self.player
-        have = self.count_group(group)
-        if have >= cap:
-            self.float_text(p.x, p.y - 34, full_msg, (210, 210, 210))
-            return False
-        self.audio.play(sound)
-        for i in range(min(n, cap - have)):
-            a = random.random() * 6.28
-            self.summon(kind, p.x + math.cos(a) * 44, p.y + math.sin(a) * 44, group)
-
-    def ab_summon_wolves(self):
-        return self._spawn_beasts('wolf', 'wolf', 2, 4, "The pack is full!", 'howl')
-
-    def ab_summon_hawk(self):
-        return self._spawn_beasts('hawk', 'hawk', 1, 2, "Two hawks is enough!", 'screech')
-
-    def ab_summon_bear(self):
-        p = self.player
-        if self._spawn_beasts('bear', 'bear', 1, 1, "Your bear is already here!", 'roar') is False:
-            return False
-        self.shake = max(self.shake, 0.3)
-        self.aoe(p.x, p.y, 170, 0, knock=190, stun=1.2, color=(235, 190, 120))
 
     # -- Monk
     def ab_sky_strike(self):
@@ -1120,6 +1125,238 @@ class Game:
         ghost = Entity(e.x, e.y, e.w, e.h)                               # an invisible copy that flies and checks walls
         self.flung.append(dict(e=e, ghost=ghost, d=d, left=dist, hit={id(e)}))
 
+    # -- Swordsman
+    def ab_triple_slash(self):
+        """Swipe 1 of 3. Pressing the ability again within a few seconds does swipes 2 and 3 for free
+        (use_ability() sends those presses straight to slash_step() below)."""
+        self.player.combo = 0
+        self.slash_step()
+
+    def slash_step(self):
+        """One swipe of the combo: a short step forward, then hurt every monster in an arc in FRONT of you.
+        The third swipe is the big one - more damage, more reach, and it knocks monsters back."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        p.combo += 1
+        last = p.combo >= 3
+        ext = self.blade_reach()
+        for _ in range(4):                                       # the little lunge (stops at walls)
+            p.move(d.x * 9, d.y * 9, self.dungeon)
+        rng = SLASH_RANGE * ext * (1.25 if last else 1.0)
+        half = SLASH_ARC + (15 if last else 0)
+        dmg = self.power(1.9 if last else 1.2)
+        col = (190, 245, 255) if self.blade_on() else (235, 240, 255)
+        p.swing = 0.16
+        p.invuln = max(p.invuln, 0.12)
+        self.audio.play('slam' if last else 'swing')
+        self.sweeps.append([p.x, p.y, math.atan2(d.y, d.x), rng, math.radians(half), 0.22, 0.22, col])
+        for e in self.enemies[:]:
+            dx, dy = e.x - p.x, e.y - p.y
+            dist = math.hypot(dx, dy)
+            if dist > rng + e.w / 2:
+                continue
+            if dist > e.w / 2 + 14 and abs(d.angle_to(V2(dx, dy)) % 360 - 180) < 180 - half:
+                continue                                         # it's beside or behind you
+            if last and e.kind not in BOSS_KINDS:
+                e.stun_t = max(e.stun_t, 0.4)
+            self.damage_enemy(e, dmg, origin=(p.x, p.y), push=420 if last else 160)
+        for pr in self.projectiles:                              # the swipe swats arrows out of the air
+            dx, dy = pr.x - p.x, pr.y - p.y
+            if math.hypot(dx, dy) < rng and abs(d.angle_to(V2(dx, dy)) % 360 - 180) >= 180 - half:
+                pr.alive = False
+                self.burst(pr.x, pr.y, (255, 255, 200), 5, 80, glow=True)
+        self.burst(p.x + d.x * rng * 0.6, p.y + d.y * rng * 0.6, col, 10 if last else 6, 160, glow=True)
+        if last:
+            p.combo = 0
+            p.buffs.pop('combo', None)
+            self.shake = max(self.shake, 0.3)
+            self.rumble(0.6, 180)
+            self.hitstop = max(self.hitstop, 0.04)
+        else:
+            p.buffs['combo'] = SLASH_WINDOW
+            p.buffs['combo_gap'] = 0.14
+
+    def ab_war_cry(self):
+        """A shout that hurts a little and STUNS every monster around you."""
+        p = self.player
+        r = WARCRY_RADIUS * self.blade_reach()
+        self.audio.play('roar')
+        self.shake = max(self.shake, 0.35)
+        self.rumble(0.6, 220)
+        n = self.aoe(p.x, p.y, r, self.power(1.0), knock=90, stun=WARCRY_STUN, color=(255, 225, 140))
+        self.burst(p.x, p.y, (255, 235, 170), 24, 230, glow=True)
+        if n:
+            self.float_text(p.x, p.y - 36, "STUNNED!", (255, 235, 140), big=True)
+
+    def ab_greatblade(self):
+        """Extend the sword: more damage and longer reach on attacks AND abilities for a while.
+        Press the ability again before it runs out to throw blade waves (ab_blade_wave below)."""
+        p = self.player
+        p.buffs['greatblade'] = BLADE_TIME
+        p.blade_wave = True
+        self.audio.play('shield')
+        self.audio.play('unlock')
+        self.shake = max(self.shake, 0.25)
+        self.shockwave(p.x, p.y, 90, (150, 235, 255))
+        self.burst(p.x, p.y, (190, 245, 255), 28, 220, glow=True)
+        self.float_text(p.x, p.y - 36, "GREATBLADE!", (190, 245, 255), big=True)
+
+    def ab_blade_wave(self):
+        """The Greatblade recast: three waves of energy fly out where you are pointing and cut through
+        every monster in their way. Can be used once per Greatblade."""
+        p = self.player
+        p.blade_wave = False
+        base = self.aim_dir()
+        p.face = V2(base)
+        p.swing = 0.16
+        self.audio.play('whirl')
+        self.audio.play('knife')
+        self.shake = max(self.shake, 0.3)
+        self.rumble(0.7, 220)
+        for a in (-16, 0, 16):
+            d = base.rotate(a)
+            self.bolts.append(Bolt(p.x + d.x * 20, p.y + d.y * 20, d.x * 520, d.y * 520, self.power(1.6),
+                                   (150, 235, 255), 14, 0.75, pierce=True, kind='wave'))
+        self.sweeps.append([p.x, p.y, math.atan2(base.y, base.x), 70, math.radians(60), 0.22, 0.22, (190, 245, 255)])
+        self.burst(p.x + base.x * 24, p.y + base.y * 24, (190, 245, 255), 16, 200, glow=True)
+
+    # -- Vampire Lord
+    def heal_player(self, amount):
+        p = self.player
+        amount = int(amount)
+        if amount > 0 and 0 < p.hp < p.max_hp:
+            p.hp = min(p.max_hp, p.hp + amount)
+            self.float_text(p.x, p.y - 30, f"+{amount}", (130, 255, 160))
+
+    def blood_flow(self, x, y, n):
+        """Drops of blood that fly from (x, y) to the hero. Just for looks - update_blood() moves them."""
+        for i in range(n):
+            self.drops.append([x + random.uniform(-10, 10), y + random.uniform(-10, 10), i * 0.035, 2.0])
+
+    def ab_blood_drain(self):
+        """Suck blood out of a monster in front of you: it is hurt, the blood flows to you and heals a little."""
+        p = self.player
+        face = self.aim_dir()
+        best, score = None, 1e9
+        for e in self.enemies:
+            dx, dy = e.x - p.x, e.y - p.y
+            dist = math.hypot(dx, dy)
+            if dist > DRAIN_RANGE + e.w / 2 or not self.dungeon.line_clear(p.x, p.y, e.x, e.y):
+                continue
+            ang = abs((face.angle_to(V2(dx, dy)) + 180) % 360 - 180) if dist > 1 else 0
+            sc = dist + ang * 2.5                          # monsters you are pointing at come first
+            if sc < score:
+                best, score = e, sc
+        if best is None:
+            self.float_text(p.x, p.y - 30, "No target!", (200, 200, 200))
+            return False
+        e = best
+        if math.hypot(e.x - p.x, e.y - p.y) > 1:
+            p.face = V2(e.x - p.x, e.y - p.y).normalize()
+        self.audio.play('bite')
+        self.audio.play('cast')
+        self.zaps.append([[(e.x, e.y), (p.x, p.y)], 0.18, 0.18, (235, 40, 70)])
+        self.blood_flow(e.x, e.y, 9)
+        self.burst(e.x, e.y, (220, 30, 55), 12, 150, glow=True)
+        self.damage_enemy(e, self.power(1.7), knock=False)
+        self.heal_player(max(1, p.max_hp * DRAIN_HEAL))
+
+    def ab_blood_pool(self):
+        """Sink into a pool of blood. Player.update() keeps you unhurtable; update_blood() hurts monsters on it."""
+        p = self.player
+        p.buffs['pool'] = POOL_TIME
+        p.pool_tick = 0.0
+        p.pooled = True
+        p.dash_t = 0.0
+        p.invuln = max(p.invuln, 0.2)
+        self.audio.play('warp')
+        self.shockwave(p.x, p.y, POOL_RADIUS, (200, 30, 55))
+        self.burst(p.x, p.y, (220, 30, 55), 26, 200, glow=True)
+
+    def ab_blood_curse(self):
+        """Throw cursed blood in front of you. Every monster it splashes takes extra damage from you, and
+        bursts a few seconds later (update_blood() does the bursting)."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        cx, cy = p.x, p.y
+        for dist in (CURSE_THROW, CURSE_THROW * 0.7, CURSE_THROW * 0.4):     # don't throw it inside a wall
+            tx, ty = p.x + d.x * dist, p.y + d.y * dist
+            if not self.dungeon.is_wall(int(tx // TILE), int(ty // TILE)) and self.dungeon.line_clear(p.x, p.y, tx, ty):
+                cx, cy = tx, ty
+                break
+        self.audio.play('nova')
+        self.audio.play('boom')
+        self.shake = max(self.shake, 0.25)
+        self.splashes.append([cx, cy, CURSE_RADIUS, 1.2, 1.2])
+        self.decal(cx, cy, (110, 20, 30), 30)
+        self.burst(cx, cy, (220, 30, 55), 34, 240, glow=True)
+        n = 0
+        for e in self.enemies:
+            if math.hypot(e.x - cx, e.y - cy) <= CURSE_RADIUS + e.w / 2:
+                e.curse_t, e.curse_dmg = CURSE_TIME, 0.0
+                n += 1
+        self.aoe(cx, cy, CURSE_RADIUS, self.power(0.6), knock=0, color=(220, 40, 60))
+        if n:
+            self.float_text(cx, cy - 40, "CURSED!", (255, 110, 110), big=True)
+
+    def update_blood(self, dt):
+        p = self.player
+        # --- Blood Pool: hurt (and slow) everything standing on it, a few times a second
+        if p.buffs.get('pool', 0) > 0:
+            p.pool_tick -= dt
+            if p.pool_tick <= 0:
+                p.pool_tick = POOL_TICK
+                self.aoe(p.x, p.y, POOL_RADIUS, self.power(0.7), knock=0, slow=0.8, color=(200, 30, 55), ring=False)
+            if random.random() < 0.5 * self.fx:
+                a, r = random.random() * 6.283, random.random() * POOL_RADIUS * 0.85
+                self.particles.append(Particle(p.x + math.cos(a) * r, p.y + math.sin(a) * r, 0, -30, 0.45,
+                                               (235, 50, 75), 3, True))
+        elif p.pooled:                                                   # time is up: pop back out
+            p.pooled = False
+            self.audio.play('warp')
+            self.shockwave(p.x, p.y, 60, (200, 30, 55))
+            self.burst(p.x, p.y, (220, 30, 55), 18, 180, glow=True)
+        # --- Blood Curse: count down, then BURST
+        total = 0
+        for e in self.enemies[:]:
+            if e.curse_t <= 0 or e not in self.enemies:
+                continue
+            e.curse_t -= dt
+            if e.curse_t > 0:
+                continue
+            dmg = int(self.power(1.5) + e.curse_dmg * CURSE_BURST)
+            e.curse_t, e.curse_dmg = 0.0, 0.0
+            total += dmg
+            self.shockwave(e.x, e.y, 55, (235, 40, 70))
+            self.burst(e.x, e.y, (230, 30, 55), 22, 240, glow=True)
+            self.blood_flow(e.x, e.y, 6)
+            self.damage_enemy(e, dmg, crit=False, knock=False, curse=False)
+        if total:
+            self.audio.play('boom')
+            self.shake = max(self.shake, 0.35)
+            self.rumble(0.7, 240)
+            self.heal_player(max(1, total * CURSE_HEAL))
+        # --- drops of blood flying home, and splashes fading on the floor
+        for dr in self.drops[:]:
+            if dr[2] > 0:
+                dr[2] -= dt
+                continue
+            dr[3] -= dt
+            dx, dy = p.x - dr[0], p.y - 6 - dr[1]
+            dist = math.hypot(dx, dy)
+            if dist < 14 or dr[3] <= 0:
+                self.drops.remove(dr)
+                continue
+            step = min(dist, 560 * dt)
+            dr[0] += dx / dist * step
+            dr[1] += dy / dist * step
+        for s in self.splashes[:]:
+            s[3] -= dt
+            if s[3] <= 0:
+                self.splashes.remove(s)
+
     def update_flung(self, dt):
         for f in self.flung[:]:
             g, e, d = f['ghost'], f['e'], f['d']
@@ -1151,7 +1388,8 @@ class Game:
                 e.x, e.y = g.x, g.y
                 e.kx = e.ky = 0.0
                 e.stun_t = max(e.stun_t, 0.25)
-            self.burst(g.x, g.y, (255, 140, 50), 2, 90, glow=True)       # fiery trail
+            if random.random() < self.fx:
+                self.burst(g.x, g.y, (255, 140, 50), 2, 90, glow=True)   # fiery trail
             if blocked or f['left'] <= 0.5:
                 self.flung.remove(f)
                 if blocked:                                              # SMASH into a wall
@@ -1182,11 +1420,6 @@ class Game:
                 self.audio.play('coin')
                 self.float_text(it.x, it.y - 10, f"+{it.value}", (255, 215, 70))
                 self.items.remove(it)
-            elif it.kind == 'potion' and p.potions < 9:
-                p.potions += 1
-                self.audio.play('potion')
-                self.float_text(it.x, it.y - 10, "Potion!", (255, 120, 150))
-                self.items.remove(it)
             elif it.kind == 'chest' and not it.opened:
                 it.opened = True
                 g = random.randint(15, 35) * self.floor
@@ -1195,18 +1428,15 @@ class Game:
                 self.float_text(it.x, it.y - 20, f"+{g} gold!", (255, 215, 70), big=True)
                 self.burst(it.x, it.y, (255, 230, 120), 20, 160, glow=True)
                 self.flash_light(it.x, it.y, 120, (255, 220, 100), 0.6, 0.4)
-                if random.random() < 0.5 and p.potions < 9:
-                    p.potions += 1
-                    self.float_text(it.x, it.y - 40, "Potion!", (255, 120, 150))
 
     def update_fx(self, dt):
-        for pa in self.particles[:]:
+        slow = 0.92 ** (dt * 60)                       # sparkles slow down the same at any FPS
+        for pa in self.particles:
             pa.life -= dt
             pa.x += pa.vx * dt
             pa.y += pa.vy * dt
-            pa.vx *= 0.92; pa.vy *= 0.92
-            if pa.life <= 0:
-                self.particles.remove(pa)
+            pa.vx *= slow; pa.vy *= slow
+        self.particles = [pa for pa in self.particles if pa.life > 0]
         for tx in self.texts[:]:
             tx.life -= dt
             tx.y -= 30 * dt
@@ -1220,6 +1450,10 @@ class Game:
             z[1] -= dt
             if z[1] <= 0:
                 self.zaps.remove(z)
+        for s in self.sweeps[:]:
+            s[5] -= dt
+            if s[5] <= 0:
+                self.sweeps.remove(s)
         for f in self.flashes[:]:
             f[5] -= dt
             if f[5] <= 0:
@@ -1230,7 +1464,7 @@ class Game:
             c.life -= dt
             if c.life <= 0:
                 self.corpses.remove(c)
-            elif necro and random.random() < 0.03:
+            elif necro and random.random() < 0.03 * self.fx:
                 self.particles.append(Particle(c.x + random.uniform(-8, 8), c.y, 0, -26, 0.9, (130, 255, 170), 3, True))
 
     def update_motes(self, dt):
@@ -1249,6 +1483,7 @@ class Game:
 
     def update(self, dt):
         self.t += dt
+        self.fx = min(3.0, dt * 60)
         self.audio.update()
         self.fade = max(0.0, self.fade - dt * 1.5)
         self.banner_t = max(0.0, self.banner_t - dt)
@@ -1265,7 +1500,7 @@ class Game:
                 return
             p = self.player
             self.run_time += dt
-            if p.dash_t > 0 or p.launch_t > 0:
+            if (p.dash_t > 0 or p.launch_t > 0) and (not self.trail or self.trail[-1][3] <= 0.22 - 1 / 75):
                 self.trail.append([p.x, p.y, p.dir_name, 0.22])
             for tr in self.trail[:]:
                 tr[3] -= dt
@@ -1288,6 +1523,7 @@ class Game:
                 if not b.alive:
                     self.bolts.remove(b)
             self.update_flung(dt)
+            self.update_blood(dt)
             self.update_items(dt)
             self.update_fx(dt)
             self.reveal()
@@ -1404,15 +1640,54 @@ class Game:
     # ------------------------------------------------------------ the SHOP screen
     def shop_offers(self):
         f = self.floor
-        return [
-            ('potion', 'Potion', 'Carry one more healing potion', 15 + f * 2),
+        offers = [
             ('hp', 'Vitality Elixir', '+15 max HP, heals it now', 35 + f * 5),
             ('dmg', 'Whetstone', '+2 damage, forever', 35 + f * 5),
             ('speed', 'Swift Boots', '+8 speed, forever', 30 + f * 4),
         ]
+        if self.return_state == 'playing':          # the healer only waits BETWEEN floors (not in the Pause shop)
+            p = self.player
+            missing = p.max_hp - p.hp
+            if missing > 0:
+                offers.insert(0, ('refill', 'Refill Health', f'Heal the {missing} HP you are missing '
+                                  f'(you have {p.hp} / {p.max_hp})', self.refill_cost()))
+            else:
+                offers.insert(0, ('refill', 'Refill Health', 'Your health is already full', 0))
+        return offers
+
+    def refill_cost(self):
+        """Gold for healing back to full. You only pay for the health you are missing."""
+        p = self.player
+        missing = p.max_hp - p.hp
+        if missing <= 0:
+            return 0
+        full = REFILL_BASE + REFILL_PER_FLOOR * self.floor
+        return max(1, math.ceil(full * missing / p.max_hp))
+
+    def buy_refill(self):
+        p = self.player
+        missing, cost = p.max_hp - p.hp, self.refill_cost()
+        if missing <= 0:
+            self.audio.play('deflect')
+            self.toast("Your health is already full!", (190, 230, 190))
+            return
+        if p.gold <= 0:
+            self.audio.play('deflect')
+            self.toast("Not enough gold!", (255, 160, 140))
+            return
+        if p.gold >= cost:
+            heal, paid = missing, cost
+        else:                                       # can't afford it all? heal as much as your gold buys
+            heal, paid = max(1, missing * p.gold // cost), p.gold
+        p.gold -= paid
+        p.hp = min(p.max_hp, p.hp + heal)
+        self.hp_trail = p.hp
+        self.audio.play('potion')
+        self.toast(f"+{heal} HP for {paid} gold" + ("" if heal == missing else "  (all you could afford)"),
+                   (130, 255, 160))
 
     def shop_items(self):
-        items = [(f"{name}  -  {cost}g", (lambda k=key, c=cost: self.buy_shop_item(k, c)))
+        items = [(f"{name}  -  {cost}g" if cost else name, (lambda k=key, c=cost: self.buy_shop_item(k, c)))
                  for key, name, desc, cost in self.shop_offers()]
         items.append(("LEAVE SHOP", self.close_shop))
         return items
@@ -1430,16 +1705,16 @@ class Game:
 
     def buy_shop_item(self, key, cost):
         p = self.player
+        if key == 'refill':
+            self.buy_refill()
+            return
         if p.gold < cost:
             self.audio.play('deflect')
             self.toast("Not enough gold!", (255, 160, 140))
             return
         p.gold -= cost
         self.audio.play('coin')
-        if key == 'potion':
-            p.potions += 1
-            self.toast("+1 Potion", (255, 180, 200))
-        elif key == 'hp':
+        if key == 'hp':
             p.max_hp += 15
             p.hp = min(p.max_hp, p.hp + 15)
             self.toast("+15 Max HP", (255, 120, 140))
@@ -1573,8 +1848,6 @@ class Game:
                 self.state = 'paused'
                 self.menu_sel = 0
                 return
-            if inp.pressed('potion'):
-                self.drink_potion()
             if inp.pressed('interact'):
                 self.try_descend()
             for i in range(3):
@@ -1656,6 +1929,8 @@ class Game:
         elif e.type == pygame.KEYDOWN:
             if e.key == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
+            elif e.key == pygame.K_F3:
+                self.show_fps = not self.show_fps
             elif self.state == 'select' and pygame.K_1 <= e.key <= pygame.K_1 + n - 1:
                 self.sel = e.key - pygame.K_1
 
@@ -1687,6 +1962,8 @@ class Game:
             tint = (170, 170, 170)
         elif o.warn and int(self.t * 14) % 2 == 0:
             tint = (210, 40, 40)
+        elif o.curse_t > 0:
+            tint = (int(70 + 40 * math.sin(self.t * 10)), 0, 12)
         elif o.freeze_t > 0:
             tint = (70, 130, 190)
         elif o.slow_t > 0:
@@ -1735,6 +2012,13 @@ class Game:
             pygame.draw.circle(scr, (255, 235, 150), (sx, int(top - 14)), 7)
             pygame.draw.circle(scr, (255, 255, 235), (sx, int(top - 14)), 4)
             self.add_glow(sx, int(top - 14), 34, (255, 235, 150), 1.0)
+        if o.curse_t > 0:                                    # Blood Curse: a drop of blood that fills as it ticks down
+            k = 1 - o.curse_t / CURSE_TIME
+            dy = int(top - 16)
+            pygame.draw.circle(scr, (60, 0, 10), (sx, dy), 7)
+            pygame.draw.polygon(scr, (60, 0, 10), [(sx - 6, dy - 3), (sx, dy - 14), (sx + 6, dy - 3)])
+            pygame.draw.circle(scr, (240, 40, 70), (sx, dy), max(1, int(6 * k)))
+            self.add_glow(sx, sy, 50 + 30 * k, (230, 30, 60), 0.5 + 0.5 * k)
         if o.stun_t > 0:
             for k in range(3):
                 a = self.t * 6 + k * 2.1
@@ -1753,7 +2037,7 @@ class Game:
         sp, scr = self.sprites, self.screen
         sx, sy = int(m.x - cx), int(m.y - cy)
         key = m.kind + ('_flip' if m.face_left else '')
-        img = sp.minion[key][int(m.anim * (10 if m.kind == 'hawk' else 6)) % 2]
+        img = sp.minion[key][int(m.anim * 6) % 2]
         pad = sp.foot[('m', m.kind)]
         if m.spawn > 0:
             k = 0.6 + 0.4 * (1 - m.spawn / 0.4)
@@ -1762,8 +2046,6 @@ class Game:
             img = img.copy()
             img.fill((170, 170, 170, 0), special_flags=pygame.BLEND_RGB_ADD)
         lift = 0
-        if m.kind == 'hawk':
-            lift = 16 + int(3 * math.sin(m.anim * 5))
         ox = oy = 0
         if m.lunge > 0:
             k = math.sin(math.pi * m.lunge / 0.14) * 9
@@ -1821,8 +2103,33 @@ class Game:
             if p.cls == 'necromancer':
                 self.add_glow(c.x - cx, c.y - cy, 40, (90, 255, 150), 0.7 + 0.2 * math.sin(t * 4))
 
+        # --- Vampire Lord: blood on the floor (the Blood Curse splash, and the Blood Pool you hide in)
+        for s in self.splashes:
+            k = s[3] / s[4]
+            rad = int(s[2] * min(1.0, (1 - k) * 5 + 0.25))
+            img = pygame.Surface((rad * 2, rad * 2), pygame.SRCALPHA)
+            pygame.draw.circle(img, (150, 10, 30, int(150 * k)), (rad, rad), rad)
+            pygame.draw.circle(img, (235, 50, 75, int(220 * k)), (rad, rad), rad, 3)
+            scr.blit(img, (int(s[0] - cx - rad), int(s[1] - cy - rad)))
+            lights.append((s[0], s[1], s[2] * 1.4, (230, 40, 60), 0.4 * k, 0.5 * k))
+        pooled = p.buffs.get('pool', 0) > 0
+        if pooled:
+            left = p.buffs['pool']
+            rad = int(POOL_RADIUS * min(1.0, (POOL_TIME - left) * 6 + 0.3, left * 5 + 0.2))
+            img = pygame.Surface((rad * 2, rad * 2), pygame.SRCALPHA)
+            pygame.draw.circle(img, (120, 6, 24, 200), (rad, rad), rad)
+            pygame.draw.circle(img, (165, 14, 38, 215), (rad, rad), int(rad * (0.72 + 0.05 * math.sin(t * 7))))
+            pygame.draw.circle(img, (240, 60, 85, 235), (rad, rad), rad, 3)
+            for i in range(6):                                               # bubbles
+                a = i * 1.047 + t * 0.6
+                br = rad * (0.25 + 0.45 * ((i * 37) % 10) / 10)
+                pygame.draw.circle(img, (250, 120, 140, 200), (int(rad + math.cos(a) * br), int(rad + math.sin(a) * br)),
+                                   2 + int(2 * abs(math.sin(t * 5 + i))), 1)
+            scr.blit(img, (int(p.x - cx - rad), int(p.y - cy - rad)))
+            lights.append((p.x, p.y, POOL_RADIUS * 1.6, (230, 40, 60), 0.4, 0.5))
+
         # --- shadows, then everything standing on the floor sorted by depth
-        things = self.items + self.enemies + self.minions + [p]
+        things = self.items + self.enemies + self.minions + ([] if pooled else [p])
         things.sort(key=lambda o: o.y)
         for o in things:
             sx, sy = int(o.x - cx), int(o.y - cy)
@@ -1861,14 +2168,11 @@ class Game:
                 if o.kind in BOSS_KINDS and o.awake:
                     lights.append((o.x, o.y, 220, BOSS_LIGHT[o.kind], 0.4, 0.4))
             elif isinstance(o, Item):
-                bob = int(2 * math.sin(o.t * 4)) if o.kind == 'potion' else 0
                 if o.kind == 'coin':
                     img, g = sp.coin[int(o.t * 8) % 4], (255, 210, 80)
-                elif o.kind == 'potion':
-                    img, g = sp.potion, (255, 80, 110)
                 else:
                     img, g = sp.chest[1 if o.opened else 0], (255, 220, 100)
-                scr.blit(img, (sx - img.get_width() // 2, sy - img.get_height() + 12 + bob))
+                scr.blit(img, (sx - img.get_width() // 2, sy - img.get_height() + 12))
                 if not (o.kind == 'chest' and o.opened):
                     self.add_glow(sx, sy, 34, g, 0.7)
             else:
@@ -1882,8 +2186,35 @@ class Game:
         if p.swing > 0 and c['atk'] == 'melee':
             ang = math.degrees(math.atan2(-p.face.y, p.face.x))
             img = sp.slash(ang).copy()
+            reach = c['reach'] * self.blade_reach()
+            if self.blade_on():
+                img = pygame.transform.smoothscale(img, (int(img.get_width() * 1.4), int(img.get_height() * 1.4)))
             img.set_alpha(int(255 * p.swing / 0.16))
-            scr.blit(img, img.get_rect(center=(int(p.x + p.face.x * c['reach'] - cx), int(p.y + p.face.y * c['reach'] - cy))))
+            scr.blit(img, img.get_rect(center=(int(p.x + p.face.x * reach - cx), int(p.y + p.face.y * reach - cy))))
+        if self.blade_on():                                                  # the Swordsman's glowing, extended blade
+            left = p.buffs['greatblade']
+            if left > 1.5 or int(t * 12) % 2:                                # flickers just before it runs out
+                bx, by = p.x - cx + p.face.x * 12, p.y - cy - 6 + p.face.y * 12
+                ex, ey = bx + p.face.x * 44, by + p.face.y * 44
+                pygame.draw.line(scr, (90, 200, 235), (bx, by), (ex, ey), 7)
+                pygame.draw.line(scr, (225, 250, 255), (bx, by), (ex, ey), 3)
+                self.add_glow(ex, ey, 40, (150, 235, 255), 1.0)
+            self.add_glow(p.x - cx, p.y - cy, 70, (120, 220, 255), 0.45)
+            lights.append((p.x, p.y, 150, (150, 235, 255), 0.3, 0.3))
+        for dr in self.drops:                                                # blood flying back to the Vampire Lord
+            if dr[2] <= 0:
+                sx, sy = int(dr[0] - cx), int(dr[1] - cy)
+                pygame.draw.circle(scr, (130, 5, 25), (sx, sy), 5)
+                pygame.draw.circle(scr, (240, 45, 75), (sx, sy), 3)
+                self.add_glow(sx, sy, 22, (235, 40, 70), 0.8)
+        for s in self.sweeps:                                                # sword arcs
+            k = s[5] / s[6]
+            sx, sy = s[0] - cx, s[1] - cy
+            for rr, wd, col in ((s[3], max(2, int(9 * k)), s[7]), (s[3] * 0.82, max(1, int(4 * k)), (255, 255, 255))):
+                pts = [(sx + math.cos(s[2] - s[4] + 2 * s[4] * i / 14) * rr,
+                        sy + math.sin(s[2] - s[4] + 2 * s[4] * i / 14) * rr) for i in range(15)]
+                pygame.draw.lines(scr, tuple(int(v * (0.4 + 0.6 * k)) for v in col), False, pts, wd)
+            pygame.draw.lines(gl, tuple(int(v * k) for v in s[7]), False, [(x / 4, y / 4) for x, y in pts], 2)
         if p.spin > 0:
             for k in range(4):
                 a = t * 18 + k * math.pi / 2
@@ -1928,6 +2259,14 @@ class Game:
                 self.draw_heart(sx, sy - 3, b.radius + int(1.5 * math.sin(t * 22)), b.color)
                 self.add_glow(sx, sy, 56, (170, 225, 255), 1.0)
                 lights.append((b.x, b.y, 100, b.color, 0.6, 0.55))
+            elif b.kind == 'wave':                                           # Swordsman's blade wave: a flying crescent
+                ang = math.atan2(b.vy, b.vx)
+                for rr, wd, col in ((26, 7, b.color), (24, 3, (240, 255, 255))):
+                    pts = [(sx - math.cos(ang) * 16 + math.cos(ang - 1.0 + 2.0 * i / 10) * rr,
+                            sy - math.sin(ang) * 16 + math.sin(ang - 1.0 + 2.0 * i / 10) * rr) for i in range(11)]
+                    pygame.draw.lines(scr, col, False, pts, wd)
+                self.add_glow(sx, sy, 60, b.color, 1.1)
+                lights.append((b.x, b.y, 100, b.color, 0.5, 0.5))
             elif b.kind == 'orb':
                 pygame.draw.circle(scr, b.color, (sx, sy), b.radius)
                 pygame.draw.circle(scr, (255, 255, 240), (sx, sy), b.radius - 4)
@@ -1953,7 +2292,7 @@ class Game:
                 pygame.draw.circle(scr, (255, 130, 195) if i % 2 else (255, 175, 220), (px, py), 5)
             pygame.draw.circle(scr, (255, 225, 100), (sx, sy), 4)
             self.add_glow(sx, sy, 34, (255, 150, 200), 0.9)
-            if random.random() < 0.25:
+            if random.random() < 0.25 * self.fx:
                 self.particles.append(Particle(fx, fy, random.uniform(-25, 25), random.uniform(-25, 25),
                                                0.4, (255, 190, 225), 3, glow=True))
         if p.buffs.get('flowers', 0) > 0:
@@ -1993,7 +2332,7 @@ class Game:
             if addi > 0:
                 self.add_glow(sx, sy, r * 1.05, col, addi)
         scr.blit(ov, (0, 0))
-        scr.blit(pygame.transform.smoothscale(gl, (WIDTH, HEIGHT)), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        scr.blit(pygame.transform.smoothscale(gl, (WIDTH, HEIGHT), self.glow_big), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
 
         # --- floating dust, damage numbers, prompts
         for m in self.motes:
@@ -2182,8 +2521,6 @@ class Game:
         self.text(f"XP {p.xp}/{p.xp_next}", 18, (190, 205, 240), (130, 91), shadow=True)
         scr.blit(self.ui['coin'], (230, 92))
         self.text(str(p.gold), 22, (255, 220, 100), (258, 96))
-        scr.blit(self.ui['potion'], (306, 92))
-        self.text(f"x{p.potions}", 22, (255, 140, 165), (334, 96))
 
         # ---- floor title (top-centre)
         self.text(f"FLOOR {self.floor}", 34, (245, 235, 210), (WIDTH // 2, 24), center=True, outline=True)
@@ -2216,21 +2553,31 @@ class Game:
 
         # ---- ability bar (bottom-centre)
         names = c['abilities']
-        x0 = WIDTH // 2 - 196
+        x0 = WIDTH // 2 - 154
         y0 = HEIGHT - 92
-        self.panel((x0 - 16, y0 - 12, 424, 92), alpha=190)
+        self.panel((x0 - 16, y0 - 12, 340, 92), alpha=190)
         for i in range(3):
             ab = ABILITIES[names[i]]
             locked = UNLOCK_LEVELS[i] if p.level < UNLOCK_LEVELS[i] else None
+            count = None
             recast = names[i] == 'sky_strike' and self.sky_recast_ready()      # orb is stuck: press again!
+            if names[i] == 'triple_slash' and self.combo_ready():              # swipes left in the combo
+                recast, count = True, 3 - p.combo
+            if names[i] == 'greatblade' and self.blade_wave_ready():           # press again: blade waves!
+                recast = True
             self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'],
-                           0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked)
-            if recast and int(self.t * 6) % 2:
+                           0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked, count=count)
+            if recast and not locked and int(self.t * 6) % 2:
                 pygame.draw.rect(scr, (255, 255, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
+            if names[i] == 'greatblade' and self.blade_on():                   # how long the big sword lasts
+                self.text(f"{p.buffs['greatblade']:.0f}s", 20, (190, 245, 255), (x0 + i * 76 + 33, y0 - 12),
+                          center=True, outline=True)
+            if names[i] == 'blood_pool' and p.buffs.get('pool', 0) > 0:        # how long you stay in the pool
+                self.text(f"{p.buffs['pool']:.1f}s", 20, (255, 150, 165), (x0 + i * 76 + 33, y0 - 12),
+                          center=True, outline=True)
         sx = x0 + 3 * 76 + 14
         pygame.draw.line(scr, (110, 96, 70), (sx - 10, y0 + 6), (sx - 10, y0 + 60), 2)
-        self.draw_slot(sx, y0, 66, self.ui['potion_big'], (255, 120, 150), 0, 1, "potion", dim=(p.potions == 0 or p.hp >= p.max_hp), count=p.potions)
-        self.draw_slot(sx + 76, y0, 66, self.ui['dash_big'], (150, 200, 255), p.dash_cd, p.dash_cd_base, "dash")
+        self.draw_slot(sx, y0, 66, self.ui['dash_big'], (150, 200, 255), p.dash_cd, p.dash_cd_base, "dash")
 
         # ---- allies (bottom-left)
         if self.minions:
@@ -2252,17 +2599,19 @@ class Game:
             move = "Left Stick" if self.input.device == 'gamepad' else "WASD"
             parts = [f"Move: {move}    "]
             for act, lab in (('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'),
-                             ('ability3', 'Skill 3'), ('dash', 'Dash'), ('potion', 'Potion'), ('interact', 'Stairs')):
+                             ('ability3', 'Skill 3'), ('dash', 'Dash'), ('interact', 'Stairs')):
                 parts += [('action', act), f" {lab}   "]
             self.draw_inline(parts, WIDTH // 2, HEIGHT - 116, 24)
 
         if self.banner_t > 0:
             a = min(1.0, self.banner_t, (3.4 - self.banner_t) * 4)
-            band = pygame.Surface((WIDTH, 110), pygame.SRCALPHA)
-            for yy in range(110):
-                k = 1 - abs(yy - 55) / 55
-                pygame.draw.line(band, (0, 0, 0, int(165 * k * a)), (0, yy), (WIDTH, yy))
-            scr.blit(band, (0, 200))
+            if self.band_img is None:                  # painted once, then just faded in and out
+                self.band_img = pygame.Surface((WIDTH, 110), pygame.SRCALPHA)
+                for yy in range(110):
+                    k = 1 - abs(yy - 55) / 55
+                    pygame.draw.line(self.band_img, (0, 0, 0, int(165 * k)), (0, yy), (WIDTH, yy))
+            self.band_img.set_alpha(int(255 * a))
+            scr.blit(self.band_img, (0, 200))
             self.text(self.banner_text, 64, (255, 232, 160), (WIDTH // 2, 238), center=True, outline=True, alpha=int(255 * a))
             if self.banner_sub:
                 self.text(self.banner_sub, 32, (225, 215, 195), (WIDTH // 2, 280), center=True, outline=True, alpha=int(255 * a))
@@ -2276,7 +2625,7 @@ class Game:
         rows = [("Hero", c['title']), ("Level", str(p.level)), ("Health", f"{p.hp} / {p.max_hp}"),
                 ("Damage", str(p.dmg)), ("Speed", str(int(p.speed))), ("Crit chance", f"{p.crit * 100:.1f}%"),
                 ("Ability cooldowns", f"{int(p.cd_mult * 100)}%"), ("Ability power", f"{int(p.ap * 100)}%"),
-                ("Potion heals", str(p.potion_heal)), ("Allies", str(len(self.minions))),
+                ("Heal per kill", f"{p.max_hp * KILL_HEAL_FRAC:.2f} HP"), ("Allies", str(len(self.minions))),
                 ("Monsters beaten", str(p.kills)), ("Gold", str(p.gold)),
                 ("Each level gives", f"+{c['growth'][0]} HP, +{c['growth'][1]} DMG")]
         for i, (a, b) in enumerate(rows):
@@ -2306,7 +2655,7 @@ class Game:
             m = self.mask(lr, sub)
             ov.blit(m, (lx - m.get_width() // 2, ly - m.get_height() // 2), special_flags=pygame.BLEND_RGBA_SUB)
         scr.blit(ov, (0, 0))
-        scr.blit(pygame.transform.smoothscale(gl, (WIDTH, HEIGHT)), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        scr.blit(pygame.transform.smoothscale(gl, (WIDTH, HEIGHT), self.glow_big), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
         for m in self.motes:
             a = 0.35 + 0.35 * math.sin(m[4] * 1.7)
             scr.blit(self.sprites.glow(3 + m[5] * 2, (255, 190, 110), max(0.05, a)), (int(m[0]), int(m[1])),
@@ -2636,8 +2985,7 @@ class Game:
         elif st == 'shop':
             self.draw_shop()
         else:
-            scr.fill((0, 0, 0))
-            self.draw_world()
+            self.draw_world()                          # (paints the whole screen, so no need to clear it first)
             self.draw_hud()
             if self.fade > 0:
                 self.dim((0, 0, 0), int(255 * self.fade))
@@ -2675,7 +3023,7 @@ class Game:
 
     def run(self):
         while self.running:
-            dt = min(self.clock.tick(FPS) / 1000.0, 0.05)
+            dt = min(self.clock.tick(self.frame_cap) / 1000.0, 0.05)
             self.input.begin_frame()
             for e in pygame.event.get():
                 if self.input.handle_event(e):          # eaten while you are choosing a new key/button
@@ -2683,6 +3031,8 @@ class Game:
                 self.handle_event(e)
             self.step(dt)
             self.draw()
+            if self.show_fps:
+                self.text(f"{self.clock.get_fps():.0f} FPS", 22, (150, 255, 170), (WIDTH - 10, HEIGHT - 24), right=True, outline=True)
             pygame.display.flip()
         self.audio.stop()
         pygame.quit()

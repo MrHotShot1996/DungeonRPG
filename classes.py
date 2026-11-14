@@ -4,14 +4,14 @@ Want a new class? Copy one of the entries below and change the numbers!
 growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."""
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'cleric', 'necromancer', 'beastmaster', 'monk']
+CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire']
 
 CLASSES = {
     'knight': dict(
         name='Knight', short='Knight', title='The Knight', color=(90, 140, 230),
         blurb='Tough and steady. Fights up close with a big sword.',
         hp=75, dmg=12, speed=170, crit=0.08, atk='melee', atk_cd=0.38, reach=34, hitsize=66,
-        dash_cd=0.9, potion_frac=0.40, growth=(12, 2), role='Melee tank',
+        dash_cd=0.9, growth=(12, 2), role='Melee tank',
         palette=dict(armor=(70, 120, 210), trim=(55, 100, 190), legs=(70, 60, 95), helm=(150, 155, 172),
                      plume=(200, 40, 50), head='helmet', weapon='sword'),
         abilities=['whirlwind', 'shield_wall', 'ground_slam']),
@@ -19,7 +19,7 @@ CLASSES = {
         name='Ghala the Mage', short='Ghala', title='Ghala the Mage', color=(255, 125, 195),
         blurb='Fragile but deadly. Shoots pink magic from far away.',
         hp=45, dmg=11, speed=165, crit=0.10, atk='ranged', atk_cd=0.42, reach=0, hitsize=0,
-        dash_cd=0.9, potion_frac=0.40, growth=(7, 2), role='Ranged caster',
+        dash_cd=0.9, growth=(7, 2), role='Ranged caster',
         bolt=(255, 140, 210), bolt_kind='magic',
         palette=dict(armor=(240, 100, 170), trim=(212, 70, 145), legs=(125, 50, 95), helm=(255, 130, 190),
                      plume=None, head='hat', weapon='staff', orb=(255, 185, 235)),
@@ -28,44 +28,45 @@ CLASSES = {
         name='Rogue', short='Rogue', title='The Rogue', color=(90, 200, 120),
         blurb='Super fast with sneaky tricks and lots of critical hits.',
         hp=55, dmg=8, speed=200, crit=0.22, atk='melee', atk_cd=0.22, reach=30, hitsize=56,
-        dash_cd=0.55, potion_frac=0.40, growth=(9, 2), role='Fast assassin',
+        dash_cd=0.55, growth=(9, 2), role='Fast assassin',
         palette=dict(armor=(50, 95, 62), trim=(40, 72, 50), legs=(40, 40, 48), helm=(45, 78, 58),
                      plume=None, head='hood', weapon='dagger'),
         abilities=['knives', 'shadow_strike', 'poison_bomb']),
-    'cleric': dict(
-        name='Cleric', short='Cleric', title='The Cleric', color=(250, 220, 110),
-        blurb='A holy healer. Smashes foes with a mace and can heal herself.',
-        hp=65, dmg=10, speed=170, crit=0.08, atk='melee', atk_cd=0.46, reach=38, hitsize=80,
-        dash_cd=0.9, potion_frac=0.50, growth=(10, 2), role='Melee healer',
-        palette=dict(armor=(235, 235, 242), trim=(240, 210, 90), legs=(200, 190, 170), helm=(240, 210, 90),
-                     plume=None, head='helmet', weapon='mace'),
-        abilities=['smite', 'heal', 'holy_nova']),
     'necromancer': dict(
         name='Necromancer', short='Necro', title='The Necromancer', color=(150, 120, 235),
         blurb='Raises the DEAD to fight for you. Every kill heals a little.',
         hp=50, dmg=10, speed=165, crit=0.08, atk='ranged', atk_cd=0.45, reach=0, hitsize=0,
-        dash_cd=0.9, potion_frac=0.40, growth=(7, 2), role='Summoner (undead)',
+        dash_cd=0.9, growth=(7, 2), role='Summoner (undead)',
         bolt=(130, 255, 160), bolt_kind='magic', kill_heal=3,
         palette=dict(armor=(62, 42, 92), trim=(110, 240, 150), legs=(40, 28, 60), helm=(46, 32, 70),
                      plume=None, head='hood', weapon='skullstaff', face='dark', robe=True, orb=(130, 255, 160)),
         abilities=['raise_dead', 'corpse_explosion', 'army_of_dead']),
-    'beastmaster': dict(
-        name='Beastmaster', short='Beastmaster', title='The Beastmaster', color=(235, 150, 70),
-        blurb='Calls wild BEASTS to fight beside you: wolves, a hawk and a bear!',
-        hp=60, dmg=9, speed=175, crit=0.08, atk='ranged', atk_cd=0.38, reach=0, hitsize=0,
-        dash_cd=0.9, potion_frac=0.40, growth=(9, 2), role='Summoner (beasts)',
-        bolt=(235, 205, 150), bolt_kind='arrow',
-        palette=dict(armor=(150, 100, 60), trim=(115, 78, 46), legs=(85, 64, 48), helm=(96, 134, 72),
-                     plume=None, head='hood', weapon='bow', collar=(235, 225, 200), feather=(220, 70, 60)),
-        abilities=['summon_wolves', 'summon_hawk', 'summon_bear']),
     'monk': dict(
         name='Monk', short='Monk', title='The Monk', color=(255, 150, 70),
         blurb='A fast martial artist. Throws an orb that sticks to a foe, then launches in to finish them.',
         hp=62, dmg=10, speed=190, crit=0.14, atk='melee', atk_cd=0.3, reach=28, hitsize=58,
-        dash_cd=0.75, potion_frac=0.40, growth=(9, 2), role='Mobile brawler',
+        dash_cd=0.75, growth=(9, 2), role='Mobile brawler',
         palette=dict(armor=(222, 142, 58), trim=(150, 90, 40), legs=(70, 55, 40), helm=(90, 60, 40),
                      plume=(205, 55, 45), head='hood', weapon='fists', robe=True, wraps=(235, 225, 205)),
         abilities=['sky_strike', 'tempest_kick', 'dragons_kick']),
+    'swordsman': dict(
+        name='Swordsman', short='Swordsman', title='The Exiled Swordsman', color=(150, 230, 245),
+        blurb='An exile with a growing blade. Chains 3 swipes and stuns with a shout.',
+        hp=66, dmg=11, speed=180, crit=0.12, atk='melee', atk_cd=0.34, reach=34, hitsize=66,
+        dash_cd=0.8, growth=(10, 2), role='Combo fighter',
+        palette=dict(armor=(88, 96, 116), trim=(60, 66, 84), legs=(52, 50, 64), helm=(58, 44, 40),
+                     plume=None, head='helmet', weapon='sword', collar=(200, 55, 60)),
+        abilities=['triple_slash', 'war_cry', 'greatblade']),
+    'vampire': dict(
+        name='Vampire Lord', short='Vampire', title='The Vampire Lord', color=(235, 70, 95),
+        blurb='Drinks blood to stay alive. Hides in a pool of blood and curses foes so they BURST.',
+        hp=54, dmg=10, speed=170, crit=0.08, atk='ranged', atk_cd=0.42, reach=0, hitsize=0,
+        dash_cd=0.9, growth=(8, 2), role='Blood caster',
+        bolt=(225, 40, 65), bolt_kind='magic',
+        palette=dict(armor=(74, 18, 32), trim=(190, 30, 55), legs=(34, 22, 30), helm=(30, 24, 34),
+                     plume=None, head='helmet', weapon='orb', robe=True, orb=(235, 45, 70),
+                     collar=(150, 20, 40), skin=(226, 222, 234)),
+        abilities=['blood_drain', 'blood_pool', 'blood_curse']),
 }
 
 ABILITIES = {
@@ -90,13 +91,6 @@ ABILITIES = {
                           desc='Zip to a monster and stab it for triple damage!'),
     'poison_bomb': dict(name='Poison Bomb', cd=11, color=(110, 220, 90), icon='poison',
                         desc='A green cloud that poisons monsters for 6 seconds.'),
-    # --- Cleric
-    'smite': dict(name='Smite', cd=6, color=(255, 225, 110), icon='smite',
-                  desc='Holy lightning strikes the 3 nearest monsters.'),
-    'heal': dict(name='Heal', cd=12, color=(110, 255, 150), icon='heal',
-                 desc='Heal 35% of your maximum health.'),
-    'holy_nova': dict(name='Holy Nova', cd=10, color=(255, 240, 170), icon='nova',
-                      desc='A burst of light that blasts monsters away.'),
     # --- Necromancer
     'raise_dead': dict(name='Raise Dead', cd=7, color=(130, 255, 160), icon='raise',
                        desc='Raise up to 3 fallen monsters near you as undead allies.'),
@@ -104,13 +98,6 @@ ABILITIES = {
                              desc='Blow up every corpse nearby. Big damage to monsters around them!'),
     'army_of_dead': dict(name='Army of the Dead', cd=26, color=(150, 140, 255), icon='army',
                          desc='Call 5 skeleton warriors out of the ground for 18 seconds.'),
-    # --- Beastmaster
-    'summon_wolves': dict(name='Summon Wolves', cd=9, color=(190, 195, 215), icon='wolf',
-                          desc='Call 2 fast wolves. They stay until they fall (max 4).'),
-    'summon_hawk': dict(name='Summon Hawk', cd=12, color=(225, 170, 90), icon='hawk',
-                        desc='A hawk that dive-bombs monsters from above (max 2).'),
-    'summon_bear': dict(name='Summon Bear', cd=22, color=(205, 140, 80), icon='bear',
-                        desc='A huge bear that stuns nearby monsters with a roar (max 1).'),
     # --- Monk
     'sky_strike': dict(name='Sky Strike', cd=6, color=(255, 235, 150), icon='fist',
                        desc='Throw an orb that sticks to the first monster it hits (light damage). '
@@ -120,4 +107,20 @@ ABILITIES = {
                          desc='A spinning kick that hits and knocks back every monster around you.'),
     'dragons_kick': dict(name="Dragon's Kick", cd=13, color=(255, 120, 60), icon='kick',
                         desc='Kick the nearest monster FAR away. It flies in a straight line and damages every monster it crashes into on the way!'),
+    # --- Swordsman
+    'triple_slash': dict(name='Triple Slash', cd=7, color=(235, 240, 255), icon='trislash',
+                         desc='Swipe the monsters in FRONT of you. Press again for 2 more swipes - '
+                              'the third hits hardest!'),
+    'war_cry': dict(name='War Cry', cd=9, color=(255, 225, 140), icon='warcry',
+                    desc='A mighty shout that hurts and STUNS every monster around you for 1 second.'),
+    'greatblade': dict(name='Greatblade', cd=24, color=(150, 235, 255), icon='blade',
+                       desc='Bigger sword for 10 seconds: more damage and reach. '
+                            'Press again to throw 3 blade waves where you point!'),
+    # --- Vampire Lord
+    'blood_drain': dict(name='Blood Drain', cd=4, color=(235, 60, 85), icon='drain',
+                        desc='Suck blood from a monster in front of you. It is hurt, and the blood heals you a little.'),
+    'blood_pool': dict(name='Blood Pool', cd=16, color=(200, 40, 70), icon='pool',
+                       desc='Sink into a pool of blood for 2.5 seconds. You cannot be hurt, and monsters on it take damage.'),
+    'blood_curse': dict(name='Blood Curse', cd=20, color=(255, 100, 100), icon='curse',
+                        desc='Throw cursed blood. Monsters hit take 25% more damage, then BURST after 4 seconds and heal you.'),
 }
