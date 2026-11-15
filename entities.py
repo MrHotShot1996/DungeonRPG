@@ -6,6 +6,7 @@ from settings import (TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOS
                       HURT_INVULN, XP_MULT)
 from classes import CLASSES
 from ai import smarts_for, memory_time, lunge_lead
+import items as IT
 
 V2 = pygame.Vector2
 BOSS_KINDS = ('boss', 'warlord', 'lich', 'demon')
@@ -63,6 +64,11 @@ class Player(Entity):
         self.ability_cd = [0.0, 0.0, 0.0]
         self.ability_max = [1.0, 1.0, 1.0]
         self.buffs = {}
+        self.items = []              # the shop items you carry (ids from items.py), at most 4
+        self.istat = IT.total_stats(self.items)      # ...their stats added up, in percent
+        self.ipow = set()            # ...and the mythic powers they give
+        self.ls_bank = 0.0           # life steal smaller than 1 HP is saved up here
+        self.echo_cd = self.guard_cd = self.tempo_cd = 0.0     # mythic power timers
         self.sky_mark_enemy = None   # Monk's Sky Strike mark: the monster the orb is stuck to
         self.launch, self.launch_t = None, 0.0   # ...and the monster we are FLYING at after the recast
         self.slow_t = 0.0
@@ -70,6 +76,11 @@ class Player(Entity):
         self.hurt_flash = 0.0
         self.anim = 0.0
         self.moving = False
+
+    def refresh_items(self):
+        """Call after `self.items` changes: adds up the stats and powers again."""
+        self.istat = IT.total_stats(self.items)
+        self.ipow = IT.powers(self.items)
 
     @property
     def dir_name(self):
@@ -79,7 +90,8 @@ class Player(Entity):
 
     def update(self, dt, inp, game):
         """`inp` is the Input object (keyboard + controller). It tells us where to walk, aim and what's held."""
-        for name in ('attack_cd', 'swing', 'invuln', 'dash_cd', 'slow_t', 'spin', 'hurt_flash'):
+        for name in ('attack_cd', 'swing', 'invuln', 'dash_cd', 'slow_t', 'spin', 'hurt_flash',
+                     'echo_cd', 'guard_cd', 'tempo_cd'):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
         for i in range(3):
             self.ability_cd[i] = max(0.0, self.ability_cd[i] - dt)
@@ -162,8 +174,17 @@ class Player(Entity):
             game.audio.play('deflect')
             game.burst(self.x, self.y, (120, 180, 255), 8, 120, glow=True)
             return
-        dmg = max(1, int(dmg))
+        dmg = max(1, int(dmg * (1 - self.istat['df'] / 100)))       # (defense from items)
+        guard = 'guard' in self.ipow and self.guard_cd <= 0
         self.hp -= dmg
+        if guard and self.hp < self.max_hp * IT.MYTHIC_GUARD_HP:      # Guardian Clock: a shield pops up,
+            self.hp = max(1, self.hp)                                 # and this hit can't kill you
+            self.guard_cd = IT.MYTHIC_GUARD_CD
+            self.buffs['shield'] = max(self.buffs.get('shield', 0), IT.MYTHIC_GUARD_TIME)
+            game.audio.play('shield')
+            game.float_text(self.x, self.y - 46, "Guardian Clock!", (120, 200, 255), big=True)
+        if 'thorns' in self.ipow:                                     # Bramble Heart: hurt whoever hit us up close
+            game.thorns_from(sx, sy)
         self.invuln = HURT_INVULN
         self.hurt_flash = 0.45
         d = V2(self.x - sx, self.y - sy)
@@ -277,7 +298,7 @@ class Enemy(Entity):
             self.poison_tick -= dt
             if self.poison_tick <= 0:
                 self.poison_tick = 0.5
-                game.damage_enemy(self, max(1, int(self.poison_dps * 0.5)), crit=False, knock=False, dot=True)
+                game.damage_enemy(self, max(1, int(self.poison_dps * 0.5)), crit=False, knock=False, dot=True, src='dot')
                 if self.hp <= 0:
                     return
         self.slow_t = max(0.0, self.slow_t - dt)
@@ -773,7 +794,7 @@ class Minion(Entity):
                 or not d.line_clear(self.x, self.y, t.x, t.y)):
             self.target = t = game.nearest_enemy(self.x, self.y, 320, p)
         sp = self.speed
-        dmg = max(2, int(p.dmg * self.mult))
+        dmg = max(2, int(p.dmg * self.mult * (1 + p.istat['ap'] / 100)))   # (ability damage items help allies too)
         mx = my = 0.0
 
         if t is None:
@@ -807,7 +828,8 @@ class Minion(Entity):
                     self.cd = self.cd_base
                     self.lunge = 0.1
                     self.vec = (nx, ny)
-                    game.bolts.append(Bolt(self.x, self.y, nx * 380, ny * 380, dmg, (225, 235, 255), 4, 1.2, kind='arrow'))
+                    game.bolts.append(Bolt(self.x, self.y, nx * 380, ny * 380, dmg, (225, 235, 255), 4, 1.2, kind='arrow',
+                                           src='ally'))
                     game.audio.play('shoot')
             if abs(nx) > 0.2:
                 self.face_left = nx < 0
@@ -851,10 +873,12 @@ class Projectile:
 class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
-                 kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None):
+                 kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None,
+                 src='ability'):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
+        self.src = src         # 'basic' (a basic attack), 'ability' or 'ally' - shop items care which
         self.mark = mark       # Monk's Sky Strike: the orb sticks to the first monster it hits
         self.freeze = freeze   # Ghala's Frozen Heart: seconds the monster it hits stays frozen
         self.falloff = falloff # Shadow Ninja's shurikens: every hit after the FIRST does this much of the damage
@@ -898,7 +922,7 @@ class Bolt:
                     return
                 dmg = self.dmg if first else self.dmg * self.falloff     # (falloff is 1.0 for everything but shurikens)
                 game.damage_enemy(e, int(dmg), crit=self.crit, origin=(self.x - self.vx, self.y - self.vy),
-                                  leech=self.leech)
+                                  leech=self.leech, src=self.src)
                 if self.mark and e in game.enemies:   # only mark it if the hit didn't kill it outright
                     p = game.player
                     p.sky_mark_enemy = e

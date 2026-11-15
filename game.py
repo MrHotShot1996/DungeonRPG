@@ -10,7 +10,8 @@ from settings import *
 from dungeon import Dungeon, FLOOR
 from ai import Brain
 from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
-from sprites import Sprites, make_icon, ui_icon, shade, add
+from sprites import Sprites, make_icon, ui_icon, item_icon, shade, add
+import items as IT
 from sounds import Audio, MUSIC_TRACKS
 from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS
 from biomes import biome, floor_name
@@ -107,6 +108,10 @@ class Game:
         self.fonts, self._text_cache, self._panels, self._masks = {}, {}, {}, {}
         self.icons = {n: make_icon(a['icon'], a['color']) for n, a in ABILITIES.items()}
         self.ui = {'coin': ui_icon('coin', 26), 'dash': ui_icon('dash', 26), 'dash_big': ui_icon('dash', 40)}
+        self.item_icons = {}                  # (item id, size) -> picture, made the first time it is needed
+        self.shop_sel = 0                     # which thing is highlighted on the Shop screen
+        self.shop_sell = None                 # the slot you pressed 'sell' on once (press again to really sell)
+        self.pending_thorns = []              # monsters that Bramble Heart will hurt back this frame
         self.overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.glow_layer = pygame.Surface((WIDTH // 4, HEIGHT // 4))
         self.glow_big = pygame.Surface((WIDTH, HEIGHT))          # the glow layer blown up (made once, reused every frame)
@@ -557,8 +562,8 @@ class Game:
             self.audio.play('cast' if kind == 'magic' else 'knife')
             speed = 560 if kind == 'arrow' else 400
             self.bolts.append(Bolt(p.x + d.x * 16, p.y + d.y * 16, d.x * speed, d.y * speed,
-                                   p.dmg + random.randint(-1, 1), c.get('bolt', (205, 130, 255)),
-                                   4 if kind == 'arrow' else 6, 1.1, kind=kind, crit=None))
+                                   self.basic_damage(1) * self.spellblade(True), c.get('bolt', (205, 130, 255)),
+                                   4 if kind == 'arrow' else 6, 1.1, kind=kind, crit=None, src='basic'))
             self.burst(p.x + d.x * 18, p.y + d.y * 18, c.get('bolt', (255, 255, 255)), 4, 80, glow=True)
             return
         p.swing = 0.16
@@ -569,16 +574,101 @@ class Game:
         reach = c['reach'] * self.blade_reach()
         hit = pygame.Rect(0, 0, hs, hs)
         hit.center = (p.x + f.x * reach, p.y + f.y * reach)
-        for e in self.enemies[:]:
-            if hit.colliderect(e.rect):
-                self.damage_enemy(e, (p.dmg + random.randint(-2, 2)) * (BLADE_DMG if big else 1.0))
+        targets = [e for e in self.enemies if hit.colliderect(e.rect)]
+        edge = self.spellblade(bool(targets))                    # Arcane Edge: one empowered swing
+        for e in targets:
+            if e in self.enemies:
+                self.damage_enemy(e, self.basic_damage(2) * edge * (BLADE_DMG if big else 1.0), src='basic')
         for pr in self.projectiles:   # slash can swat away arrows!
             if hit.collidepoint(pr.x, pr.y):
                 pr.alive = False
                 self.audio.play('deflect')
                 self.burst(pr.x, pr.y, (255, 255, 200), 5, 80, glow=True)
 
-    def damage_enemy(self, e, dmg, crit=None, knock=True, origin=None, leech=False, dot=False, push=None, curse=True):
+    def basic_damage(self, spread):
+        """The damage of one basic attack, with the bonuses from shop items."""
+        p = self.player
+        dmg = (p.dmg + random.randint(-spread, spread)) * (1 + p.istat['atk'] / 100)
+        if 'titan' in p.ipow:                                    # Titan's Maul
+            dmg += p.max_hp * IT.MYTHIC_TITAN_HP
+        return dmg
+
+    def spellblade(self, use):
+        """Arcane Edge: the damage multiplier for this basic attack (and uses the bonus up if `use`)."""
+        p = self.player
+        if p.buffs.get('spellblade', 0) > 0 and 'spellblade' in p.ipow:
+            if use:
+                del p.buffs['spellblade']
+                self.burst(p.x + p.face.x * 20, p.y + p.face.y * 20, (190, 160, 255), 10, 140, glow=True)
+            return 1 + IT.MYTHIC_SPELLBLADE_BONUS
+        return 1.0
+
+    def item_heal(self, amount):
+        """Healing from items. Bits smaller than 1 HP are saved up so that nothing is lost."""
+        p = self.player
+        if p.hp <= 0 or p.hp >= p.max_hp:
+            p.ls_bank = 0.0
+            return
+        p.ls_bank += amount
+        whole = int(p.ls_bank)
+        if whole:
+            p.ls_bank -= whole
+            p.hp = min(p.max_hp, p.hp + whole)
+            if random.random() < 0.5 * self.fx:
+                self.particles.append(Particle(p.x + random.uniform(-10, 10), p.y + 4, 0, -50, 0.5, (130, 255, 160), 3, True))
+
+    def refund_cooldowns(self, secs):
+        p = self.player
+        for i in range(3):
+            if p.ability_cd[i] > 0:
+                p.ability_cd[i] = max(0.0, p.ability_cd[i] - secs)
+
+    def item_on_hit(self, e, dmg, src):
+        """The shop items' powers that happen when YOU hurt a monster. `src` says what did the damage:
+        'basic' (a basic attack), 'ability', 'dot' (poison and the like), 'ally' (your summons) or 'item'."""
+        p = self.player
+        if src == 'basic':
+            ls = p.istat['ls'] / 100
+            if 'reaver' in p.ipow and p.hp < p.max_hp * IT.MYTHIC_REAVER_HP:      # Crimson Reaver
+                ls *= 2
+            if ls:
+                self.item_heal(dmg * ls)
+            if 'tempo' in p.ipow and p.tempo_cd <= 0:                            # Tempo Blade (once per attack)
+                p.tempo_cd = 0.1
+                self.refund_cooldowns(IT.MYTHIC_TEMPO_REFUND)
+        elif src in ('ability', 'dot'):
+            if 'soul' in p.ipow:                                                 # Soul Drinker
+                self.item_heal(dmg * IT.MYTHIC_SOUL_HEAL)
+            if src == 'ability':
+                if 'frost' in p.ipow:                                            # Frost Aegis
+                    e.slow_t = max(e.slow_t, IT.MYTHIC_FROST_SLOW)
+                if 'echo' in p.ipow and p.echo_cd <= 0:                          # Echo Staff
+                    p.echo_cd = IT.MYTHIC_ECHO_CD
+                    blast = int(p.dmg * IT.MYTHIC_ECHO_POWER * (1 + p.istat['ap'] / 100))
+                    self.shockwave(e.x, e.y, IT.MYTHIC_ECHO_RADIUS, (150, 140, 255))
+                    self.burst(e.x, e.y, (170, 160, 255), 18, 190, glow=True)
+                    for o in self.enemies[:]:
+                        if o in self.enemies and math.hypot(o.x - e.x, o.y - e.y) <= IT.MYTHIC_ECHO_RADIUS + o.w / 2:
+                            self.damage_enemy(o, blast, crit=False, origin=(e.x, e.y), push=160, src='item')
+
+    def thorns_from(self, sx, sy):
+        """Bramble Heart: remember the monster standing at (sx, sy) - the spot the hit came from - if it is
+        close. It is hurt back in step(), after all the monsters have finished moving."""
+        p = self.player
+        for e in self.enemies:
+            if abs(e.x - sx) < 3 and abs(e.y - sy) < 3 and math.hypot(e.x - p.x, e.y - p.y) < 190:
+                self.pending_thorns.append(e)
+
+    def update_thorns(self):
+        p = self.player
+        for e in self.pending_thorns:
+            if e in self.enemies and e.hp > 0:
+                self.burst(e.x, e.y, (150, 205, 130), 8, 130, glow=True)
+                self.damage_enemy(e, p.dmg * IT.MYTHIC_THORNS, crit=False, knock=False, src='item')
+        self.pending_thorns.clear()
+
+    def damage_enemy(self, e, dmg, crit=None, knock=True, origin=None, leech=False, dot=False, push=None, curse=True,
+                     src='ability'):
         p = self.player
         if crit is None:
             crit = random.random() < p.crit
@@ -590,6 +680,7 @@ class Game:
         dmg = int(dmg)
         if cursed:
             e.curse_dmg += dmg                       # ...and remembers it, for a bigger burst at the end
+        dealt = min(dmg, max(0, e.hp))               # (overkill doesn't count for life steal)
         e.hp -= dmg
         e.awake = True
         e.lost_t = 0.0                                # (getting hit reminds it where you are)
@@ -611,6 +702,8 @@ class Game:
             e.kx, e.ky = d.x * amount, d.y * amount
         if e.hp <= 0:
             self.kill_enemy(e)
+        if p.items and src not in ('ally', 'item'):  # shop item powers (last, so a blast can't kill `e` twice)
+            self.item_on_hit(e, dealt, src)
 
     def aoe(self, x, y, radius, dmg, knock=250, stun=0.0, slow=0.0, poison=0.0, poison_t=0.0,
             color=(255, 255, 255), crit=False, ring=True, exclude=None):
@@ -683,6 +776,9 @@ class Game:
             p.launch, p.launch_t = None, 0.0
         p.kills += 1
         p.xp += e.xp
+        if 'reaper' in p.ipow:                       # Reaper's Hourglass
+            self.refund_cooldowns(IT.MYTHIC_REAPER_REFUND)
+            self.item_heal(p.max_hp * IT.MYTHIC_REAPER_HEAL)
         self.audio.play('die')
         col = {'skeleton': (200, 200, 220), 'wraith': (190, 210, 255), 'imp': (255, 150, 50),
                'cultist': (200, 80, 255), 'spider': (120, 80, 150), 'goblin': (110, 170, 60),
@@ -804,7 +900,7 @@ class Game:
         return m
 
     def minion_hit(self, m, e, dmg):
-        self.damage_enemy(e, dmg, crit=False, origin=(m.x, m.y), push=130)
+        self.damage_enemy(e, dmg, crit=False, origin=(m.x, m.y), push=130, src='ally')
         if random.random() < 0.3:
             self.audio.play('bite')
 
@@ -862,8 +958,10 @@ class Game:
             return
         if getattr(self, 'ab_' + name)() is False:
             return
-        cd = ab['cd'] * p.cd_mult
+        cd = ab['cd'] * p.cd_mult * (1 - p.istat['cdr'] / 100)      # (cooldown reduction from items)
         p.ability_cd[slot] = p.ability_max[slot] = cd
+        if 'spellblade' in p.ipow:                                  # Arcane Edge: the next basic attack is stronger
+            p.buffs['spellblade'] = IT.MYTHIC_SPELLBLADE_TIME
 
     def sky_recast_ready(self):
         """True while the Monk's orb is stuck to a living monster (so ability 1 will launch you at it)."""
@@ -872,7 +970,7 @@ class Game:
 
     def power(self, mult):
         p = self.player
-        return p.dmg * mult * p.ap * (BLADE_DMG if self.blade_on() else 1.0)
+        return p.dmg * mult * p.ap * (1 + p.istat['ap'] / 100) * (BLADE_DMG if self.blade_on() else 1.0)
 
     def blade_on(self):
         """True while the Swordsman's Greatblade is extended (more damage, longer reach)."""
@@ -1677,6 +1775,7 @@ class Game:
             self.update_flung(dt)
             self.update_blood(dt)
             self.update_shadow(dt)
+            self.update_thorns()
             self.update_items(dt)
             self.update_fx(dt)
             self.reveal()
@@ -1713,8 +1812,6 @@ class Game:
             return self.pause_items()
         if self.state == 'music':
             return self.music_items()
-        if self.state == 'shop':
-            return self.shop_items()
         return []
 
     def select_item_index(self, items, label):
@@ -1791,22 +1888,21 @@ class Game:
         self.menu_input(self.music_items())
 
     # ------------------------------------------------------------ the SHOP screen
-    def shop_offers(self):
-        f = self.floor
-        offers = [
-            ('hp', 'Vitality Elixir', '+15 max HP, heals it now', 35 + f * 5),
-            ('dmg', 'Whetstone', '+2 damage, forever', 35 + f * 5),
-            ('speed', 'Swift Boots', '+8 speed, forever', 30 + f * 4),
-        ]
+    # The shop sells the items from items.py. Everything you can highlight on the screen is a "cell":
+    # your 4 slots, the health refill (between floors only), the 20 items and the LEAVE button.
+    def shop_cells(self):
+        """Every highlightable thing on the Shop screen, as (kind, key, rect)."""
+        cells = [('slot', i, pygame.Rect(40, 132 + i * 70, 262, 62)) for i in range(IT.MAX_SLOTS)]
         if self.return_state == 'playing':          # the healer only waits BETWEEN floors (not in the Pause shop)
-            p = self.player
-            missing = p.max_hp - p.hp
-            if missing > 0:
-                offers.insert(0, ('refill', 'Refill Health', f'Heal the {missing} HP you are missing '
-                                  f'(you have {p.hp} / {p.max_hp})', self.refill_cost()))
-            else:
-                offers.insert(0, ('refill', 'Refill Health', 'Your health is already full', 0))
-        return offers
+            cells.append(('refill', None, pygame.Rect(40, 610, 262, 56)))
+        for r, (row, y) in enumerate(zip(IT.SHOP_ROWS, (124, 256, 388, 498))):
+            for c, item_id in enumerate(row):
+                cells.append(('item', item_id, pygame.Rect(334 + c * 94, y, 84, 84)))
+        cells.append(('leave', None, pygame.Rect(334, 610, 460, 56)))
+        return cells
+
+    def shop_first_item(self):
+        return next(i for i, c in enumerate(self.shop_cells()) if c[0] == 'item')
 
     def refill_cost(self):
         """Gold for healing back to full. You only pay for the health you are missing."""
@@ -1839,50 +1935,100 @@ class Game:
         self.toast(f"+{heal} HP for {paid} gold" + ("" if heal == missing else "  (all you could afford)"),
                    (130, 255, 160))
 
-    def shop_items(self):
-        items = [(f"{name}  -  {cost}g" if cost else name, (lambda k=key, c=cost: self.buy_shop_item(k, c)))
-                 for key, name, desc, cost in self.shop_offers()]
-        items.append(("LEAVE SHOP", self.close_shop))
-        return items
+    def buy_item(self, item_id):
+        """Buy (or build) an item. Pieces you already carry are used up and taken off the price."""
+        p = self.player
+        cost, after, problem = IT.plan(p.items, item_id)
+        if problem:
+            self.audio.play('deflect')
+            self.toast(problem, (255, 160, 140))
+            return False
+        if p.gold < cost:
+            self.audio.play('deflect')
+            self.toast(f"Not enough gold!  ({cost - p.gold} more needed)", (255, 160, 140))
+            return False
+        p.gold -= cost
+        p.items = after
+        p.refresh_items()
+        it = IT.ITEMS[item_id]
+        self.audio.play('levelup' if it['tier'] == 3 else 'coin')
+        self.toast(f"{'Built' if it['recipe'] else 'Bought'} {it['name']}!", (255, 225, 120))
+        return True
+
+    def sell_item(self, slot):
+        p = self.player
+        if slot >= len(p.items):
+            return False
+        item_id = p.items.pop(slot)
+        p.gold += IT.sell_value(item_id)
+        p.refresh_items()
+        self.audio.play('coin')
+        self.toast(f"Sold {IT.ITEMS[item_id]['name']} for {IT.sell_value(item_id)} gold", (255, 225, 120))
+        return True
+
+    def shop_activate(self, i):
+        """Press the highlighted cell."""
+        cells = self.shop_cells()
+        kind, key, _ = cells[i]
+        was_sell, self.shop_sell = self.shop_sell, None
+        if kind == 'item':
+            self.buy_item(key)
+        elif kind == 'slot':
+            if key < len(self.player.items):
+                if was_sell == key:
+                    self.sell_item(key)
+                else:
+                    self.shop_sell = key            # ask first: press again to really sell
+                    self.audio.play('select')
+        elif kind == 'refill':
+            self.buy_refill()
+        else:
+            self.close_shop()
+
+    def shop_move(self, dx, dy):
+        """Move the highlight to the nearest cell in a direction."""
+        cells = self.shop_cells()
+        cur = cells[self.shop_sel][2]
+        best, score = None, 1e9
+        for i, (_, _, r) in enumerate(cells):
+            if i == self.shop_sel:
+                continue
+            ox, oy = r.centerx - cur.centerx, r.centery - cur.centery
+            along, side = ox * dx + oy * dy, abs(ox * dy) + abs(oy * dx)
+            if along <= 4:
+                continue
+            sc = along + side * 2.5
+            if sc < score:
+                best, score = i, sc
+        if best is not None:
+            self.shop_sel = best
+            self.shop_sell = None
+            self.audio.play('select')
 
     def open_shop(self, back_to):
         self.audio.play('select')
         self.return_state = back_to
         self.state = 'shop'
-        self.menu_sel = 0
+        self.shop_sell = None
+        self.shop_sel = self.shop_first_item()
 
     def close_shop(self):
         self.audio.play('select')
         self.state = self.return_state
+        self.shop_sell = None
         self.menu_sel = self.select_item_index(self.menu_items(), "SHOP")
 
-    def buy_shop_item(self, key, cost):
-        p = self.player
-        if key == 'refill':
-            self.buy_refill()
-            return
-        if p.gold < cost:
-            self.audio.play('deflect')
-            self.toast("Not enough gold!", (255, 160, 140))
-            return
-        p.gold -= cost
-        self.audio.play('coin')
-        if key == 'hp':
-            p.max_hp += 15
-            p.hp = min(p.max_hp, p.hp + 15)
-            self.toast("+15 Max HP", (255, 120, 140))
-        elif key == 'dmg':
-            p.dmg += 2
-            self.toast("+2 Damage", (255, 190, 110))
-        elif key == 'speed':
-            p.speed += 8
-            self.toast("+8 Speed", (150, 220, 255))
-
     def shop_input(self):
-        if self.input.nav('back'):
+        inp = self.input
+        self.shop_sel = min(self.shop_sel, len(self.shop_cells()) - 1)
+        if inp.nav('back'):
             self.close_shop()
-        else:
-            self.menu_input(self.shop_items())
+            return
+        for name, d in (('up', (0, -1)), ('down', (0, 1)), ('left', (-1, 0)), ('right', (1, 0))):
+            if inp.nav(name):
+                self.shop_move(*d)
+        if inp.nav('confirm'):
+            self.shop_activate(self.shop_sel)
 
     def menu_input(self, items):
         inp = self.input
@@ -2041,6 +2187,9 @@ class Game:
             if h[0].collidepoint(pos):
                 if h[1] == 'menu':
                     self.menu_sel = h[2]
+                elif h[1] == 'shop':
+                    if self.shop_sel != h[2]:
+                        self.shop_sel, self.shop_sell = h[2], None
                 elif h[1] == 'cell':
                     self.ctl_row, self.ctl_col = h[2], h[3]
                 elif h[1] == 'btn':
@@ -2061,6 +2210,9 @@ class Game:
                 if h[1] == 'menu':
                     self.menu_sel = h[2]
                     self.menu_items()[h[2]][1]()
+                elif h[1] == 'shop':
+                    self.shop_sel = h[2]
+                    self.shop_activate(h[2])
                 elif h[1] == 'tab':
                     self.set_tab(h[2])
                 elif h[1] == 'cell':
@@ -2696,6 +2848,17 @@ class Game:
         self.text(f"XP {p.xp}/{p.xp_next}", 18, (190, 205, 240), (130, 91), shadow=True)
         scr.blit(self.ui['coin'], (230, 92))
         self.text(str(p.gold), 22, (255, 220, 100), (258, 96))
+        for i in range(IT.MAX_SLOTS):                              # the shop items you carry
+            r = pygame.Rect(18 + i * 44, 142, 38, 38)
+            if i < len(p.items):
+                scr.blit(self.item_icon(p.items[i], 38), r)
+                power = IT.ITEMS[p.items[i]]['power']
+                wait = {'guard': p.guard_cd / IT.MYTHIC_GUARD_CD, 'echo': p.echo_cd / IT.MYTHIC_ECHO_CD}.get(power, 0)
+                if wait > 0:                                       # recharging: a dark cover that shrinks
+                    self.dim_rect(r.x, r.y, 38, int(38 * min(1.0, wait)), 150)
+            else:
+                self.dim_rect(r.x, r.y, 38, 38, 90)
+                pygame.draw.rect(scr, (90, 84, 104), r, 2, border_radius=6)
 
         # ---- floor title (top-centre)
         self.text(f"FLOOR {self.floor}", 34, (245, 235, 210), (WIDTH // 2, 24), center=True, outline=True)
@@ -2799,12 +2962,15 @@ class Game:
     def draw_stats_panel(self):
         p = self.player
         c = CLASSES[p.cls]
-        r = pygame.Rect(WIDTH // 2 - 200, 130, 400, 450)
+        r = pygame.Rect(WIDTH // 2 - 210, 96, 420, 540)
         self.panel(r, alpha=240, border=c['color'])
         self.text("YOUR HERO", 38, (255, 240, 200), (WIDTH // 2, r.y + 28), center=True, outline=True)
         rows = [("Hero", c['title']), ("Level", str(p.level)), ("Health", f"{p.hp} / {p.max_hp}"),
                 ("Damage", str(p.dmg)), ("Speed", str(int(p.speed))), ("Crit chance", f"{p.crit * 100:.1f}%"),
-                ("Ability cooldowns", f"{int(p.cd_mult * 100)}%"), ("Ability power", f"{int(p.ap * 100)}%"),
+                ("Attack bonus (items)", f"+{p.istat['atk']}%"),
+                ("Ability cooldowns", f"{int(p.cd_mult * (1 - p.istat['cdr'] / 100) * 100)}%"),
+                ("Ability power", f"{int(p.ap * (1 + p.istat['ap'] / 100) * 100)}%"),
+                ("Life steal", f"{p.istat['ls']}%"), ("Defense", f"{p.istat['df']}%"),
                 ("Heal per kill", f"{p.max_hp * KILL_HEAL_FRAC:.2f} HP"), ("Allies", str(len(self.minions))),
                 ("Monsters beaten", str(p.kills)), ("Gold", str(p.gold)),
                 ("Each level gives", f"+{c['growth'][0]} HP, +{c['growth'][1]} DMG")]
@@ -3122,32 +3288,152 @@ class Game:
                           WIDTH // 2, y0 + len(items) * (rh + gap) + 20, 22)
 
     # ------------------------------------------------------------ the SHOP screen
+    def item_icon(self, item_id, size):
+        key = (item_id, size)
+        if key not in self.item_icons:
+            self.item_icons[key] = item_icon(IT.ITEMS[item_id], IT.STAT_COLOR, size)
+        return self.item_icons[key]
+
     def draw_shop(self):
-        p = self.player
+        p, scr = self.player, self.screen
         self.lit_backdrop([(WIDTH // 2, 300, 500, 0.5)])
-        self.dim((0, 0, 10), 70)
-        self.text("SHOP", 56, (255, 214, 90), (WIDTH // 2, 60), center=True, outline=True)
-        self.text(f"Gold: {p.gold}", 26, (255, 220, 100), (WIDTH // 2, 104), center=True)
-        offers = self.shop_offers()
-        items = self.shop_items()
-        y0, rh, gap = 140, 56, 8
-        for i, (label, _) in enumerate(items):
-            r = pygame.Rect(WIDTH // 2 - 280, y0 + i * (rh + gap), 560, rh)
-            sel = i == self.menu_sel
-            is_offer = i < len(offers)
-            afford = (not is_offer) or p.gold >= offers[i][3]
-            self.panel(r, alpha=235 if sel else 200, border=(255, 214, 90) if sel else (110, 100, 130), radius=12,
-                       glow=(255, 214, 90) if sel else None)
-            col = (255, 255, 255) if sel else ((170, 170, 195) if afford else (170, 95, 95))
-            if is_offer:
-                self.text(label, 26, col, (r.x + 16, r.y + 6), outline=sel)
-                self.text(offers[i][2], 18, (190, 190, 215), (r.x + 16, r.y + 32))
+        self.dim((0, 0, 10), 110)
+        cells = self.shop_cells()
+        self.shop_sel = min(self.shop_sel, len(cells) - 1)
+        skind, skey, _ = cells[self.shop_sel]
+        self.text("SHOP", 52, (255, 214, 90), (WIDTH // 2, 44), center=True, outline=True)
+        scr.blit(self.ui['coin'], (WIDTH - 200, 30))
+        self.text(f"{p.gold} gold", 30, (255, 220, 100), (WIDTH - 166, 30))
+        self.text("YOUR ITEMS", 20, (200, 190, 160), (42, 104))
+        for lab, y in (("SMALL ITEMS", 100), ("COMPONENTS   (small item + gold)", 232),
+                       ("MYTHIC ITEMS   (two components + gold)", 364)):
+            self.text(lab, 20, (200, 190, 160), (336, y))
+
+        focus = skey if skind == 'item' else (p.items[skey] if skind == 'slot' and skey < len(p.items) else None)
+        pieces = set()                              # light up the pieces of the item you are looking at
+        if focus:
+            for r in IT.ITEMS[focus]['recipe']:
+                pieces.add(r)
+                pieces.update(IT.ITEMS[r]['recipe'])
+        for i, (kind, key, r) in enumerate(cells):
+            sel = i == self.shop_sel
+            self._hits.append((r, 'shop', i))
+            if kind == 'slot':
+                have = key < len(p.items)
+                self.panel(r, alpha=235 if sel else 190, border=(255, 214, 90) if sel else (110, 100, 130), radius=10,
+                           glow=(255, 214, 90) if sel else None)
+                if have:
+                    it = IT.ITEMS[p.items[key]]
+                    scr.blit(self.item_icon(it['id'], 50), (r.x + 6, r.y + 6))
+                    self.text(it['name'], 21, (255, 255, 255) if sel else (220, 220, 235), (r.x + 64, r.y + 8))
+                    if self.shop_sell == key:
+                        self.text("Press again to SELL", 17, (255, 150, 120), (r.x + 64, r.y + 34))
+                    else:
+                        self.text(f"sells for {IT.sell_value(it['id'])}g", 17, (170, 170, 190), (r.x + 64, r.y + 34))
+                else:
+                    self.text("empty slot", 20, (120, 116, 140), r.center, center=True)
+            elif kind == 'item':
+                it = IT.ITEMS[key]
+                cost, _, problem = IT.plan(p.items, key)
+                owned = key in p.items
+                img = self.item_icon(key, 76)
+                if sel or key in pieces:
+                    pygame.draw.rect(scr, (255, 214, 90) if sel else (150, 230, 255), r.inflate(6, 6), 3, border_radius=14)
+                scr.blit(img, (r.x + 4, r.y + 4))
+                if owned:
+                    self.dim_rect(r.x + 4, r.y + 4, 76, 76, 120)
+                    self.text("OWNED", 18, (160, 255, 170), (r.centerx, r.centery), center=True, outline=True)
+                else:
+                    col = (255, 225, 120) if (p.gold >= cost and not problem) else (235, 120, 110)
+                    self.text(f"{cost}g", 18, col, (r.centerx, r.bottom + 9), center=True, outline=True)
             else:
-                self.text(label, 28, col, r.center, center=True, outline=sel)
-            self._hits.append((r, 'menu', i))
+                self.panel(r, alpha=235 if sel else 200, border=(255, 214, 90) if sel else (110, 100, 130), radius=12,
+                           glow=(255, 214, 90) if sel else None)
+                col = (255, 255, 255) if sel else (190, 190, 210)
+                if kind == 'leave':
+                    self.text("LEAVE SHOP", 28, col, r.center, center=True, outline=sel)
+                else:
+                    missing = p.max_hp - p.hp
+                    self.text("Refill Health", 22, col, (r.x + 14, r.y + 6), outline=sel)
+                    self.text(f"heal {missing} HP  -  {self.refill_cost()}g" if missing > 0 else "already full",
+                              17, (130, 235, 160) if missing > 0 else (150, 150, 170), (r.x + 14, r.y + 31))
+
+        # ---- your stats from items (left, under the slots)
+        st = p.istat
+        for i, k in enumerate(IT.STATS):
+            y = 428 + i * 32
+            cap = IT.STAT_CAP.get(k)
+            self.text(IT.STAT_NAME[k], 19, IT.STAT_COLOR[k], (44, y))
+            self.text(f"+{st[k]}%" + (" (max)" if cap and st[k] >= cap else ""), 19, (255, 240, 200), (298, y), right=True)
+
+        # ---- the detail panel (right)
+        d = pygame.Rect(826, 100, 414, 566)
+        self.panel(d, alpha=225)
+        x, y = d.x + 20, d.y + 18
+        if focus:
+            it = IT.ITEMS[focus]
+            scr.blit(self.item_icon(focus, 64), (x, y))
+            self.text(it['name'], 28, (255, 240, 200), (x + 78, y + 2), outline=True)
+            self.text(IT.TIER_NAME[it['tier']], 19, (255, 214, 90) if it['tier'] == 3 else (180, 180, 205), (x + 78, y + 36))
+            y += 84
+            for k, v in it['stats'].items():
+                self.text(f"+{v}%  {IT.STAT_NAME[k]}", 23, IT.STAT_COLOR[k], (x, y))
+                y += 28
+            if it['desc']:
+                y += 8
+                self.text("MYTHIC POWER", 18, (255, 214, 90), (x, y))
+                y += 24
+                for line in self.wrap(it['desc'], 20, d.w - 40):
+                    self.text(line, 20, (235, 230, 215), (x, y))
+                    y += 24
+            y += 12
+            if it['recipe']:
+                self.text("BUILT FROM", 18, (200, 190, 160), (x, y))
+                y += 24
+                for r in it['recipe']:
+                    got = r in p.items or (r not in p.items and any(q in p.items for q in IT.ITEMS[r]['recipe']))
+                    full = r in p.items
+                    scr.blit(self.item_icon(r, 34), (x, y))
+                    self.text(IT.ITEMS[r]['name'], 20, (160, 255, 170) if full else (225, 225, 235), (x + 44, y - 1))
+                    note = "you have it" if full else ("you have its small item" if got else f"{IT.ITEMS[r]['price']}g")
+                    self.text(note, 16, (160, 255, 170) if got else (170, 170, 190), (x + 44, y + 19))
+                    y += 42
+                self.text(f"+ {IT.combine_cost(focus)}g to put it together", 18, (225, 225, 235), (x, y))
+                y += 30
+            else:
+                into = IT.builds_into(focus)
+                self.text("BUILDS INTO  " + ", ".join(IT.ITEMS[b]['name'] for b in into), 18, (200, 190, 160), (x, y))
+                y += 30
+            if it['tier'] == 2:
+                self.text("USED IN", 18, (200, 190, 160), (x, y))
+                y += 24
+                for b in IT.builds_into(focus):
+                    scr.blit(self.item_icon(b, 30), (x, y))
+                    self.text(IT.ITEMS[b]['name'], 19, (225, 225, 235), (x + 40, y + 4))
+                    y += 34
+            yb = d.bottom - 62
+            pygame.draw.line(scr, (110, 96, 70), (x, yb - 10), (d.right - 20, yb - 10), 2)
+            if skind == 'slot':
+                self.text(f"Sell for {IT.sell_value(focus)} gold", 26, (255, 225, 120), (x, yb))
+                self.text("(press twice to sell)", 17, (170, 170, 190), (x, yb + 30))
+            else:
+                cost, _, problem = IT.plan(p.items, focus)
+                if problem:
+                    self.text(problem, 22, (255, 150, 130), (x, yb + 8))
+                else:
+                    self.text(f"Buy for {cost} gold", 26, (255, 225, 120) if p.gold >= cost else (235, 120, 110), (x, yb))
+                    if cost < it['price']:
+                        self.text(f"(full price {it['price']}g - you carry some pieces)", 17, (160, 255, 170), (x, yb + 30))
+                    elif p.gold < cost:
+                        self.text(f"you need {cost - p.gold} more gold", 17, (235, 150, 140), (x, yb + 30))
+        else:
+            for line in ("Carry up to 4 items.", "", "Small items build into components,",
+                         "and two components build into a", "MYTHIC item with a special power.", "",
+                         "Pieces you already carry come off", "the price."):
+                self.text(line, 21, (225, 220, 205), (x, y))
+                y += 27
         how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
-        self.draw_inline([how, ('nav', 'confirm'), " to buy     ", ('nav', 'back'), " leave"],
-                          WIDTH // 2, y0 + len(items) * (rh + gap) + 20, 22)
+        self.draw_inline([how, ('nav', 'confirm'), " buy / sell     ", ('nav', 'back'), " leave"], WIDTH // 2, 694, 22)
 
     # ------------------------------------------------------------ the main draw
     def draw(self):

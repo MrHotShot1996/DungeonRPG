@@ -1009,3 +1009,86 @@ def ui_icon(kind, size=24):
         for i, a in enumerate((255, 170, 90)):
             P.polygon(s, (170, 200, 255, a), [(S // 10 + i * S // 4, S // 4), (S // 3 + i * S // 4, m), (S // 10 + i * S // 4, S * 3 // 4), (S // 5 + i * S // 4, m)])
     return pygame.transform.smoothscale(s, (size, size))
+
+
+# ====================================================================== SHOP ITEM ICONS
+def _stat_symbol(s, stat, cx, cy, r, col):
+    """Draw the little picture for one stat (sword, star, hourglass, drop, shield) centred on (cx, cy)."""
+    P = pygame.draw
+    lite = tuple(min(255, c + 70) for c in col)
+    dark = (24, 18, 30)
+    w = max(2, int(r * 0.12))
+    if stat == 'atk':                                   # a sword pointing up-right
+        d = r * 0.9
+        tip, hilt = (cx + d * 0.7, cy - d * 0.7), (cx - d * 0.35, cy + d * 0.35)
+        nx, ny = 0.7071 * r * 0.2, 0.7071 * r * 0.2
+        blade = [tip, (hilt[0] + nx, hilt[1] + ny), (hilt[0] - nx, hilt[1] - ny)]
+        P.polygon(s, lite, blade)
+        P.polygon(s, dark, blade, w)
+        P.line(s, col, (hilt[0] - r * 0.38, hilt[1] - r * 0.38), (hilt[0] + r * 0.38, hilt[1] + r * 0.38), max(3, int(r * 0.22)))
+        P.line(s, (120, 84, 50), hilt, (cx - d * 0.75, cy + d * 0.75), max(3, int(r * 0.2)))
+        P.circle(s, col, (int(cx - d * 0.75), int(cy + d * 0.75)), max(2, int(r * 0.14)))
+    elif stat == 'ap':                                  # a four-point magic star
+        pts = []
+        for i in range(8):
+            a = math.radians(i * 45 - 90)
+            k = r if i % 2 == 0 else r * 0.34
+            pts.append((cx + math.cos(a) * k, cy + math.sin(a) * k))
+        P.polygon(s, col, pts)
+        P.polygon(s, dark, pts, w)
+        P.circle(s, lite, (int(cx), int(cy)), max(2, int(r * 0.22)))
+    elif stat == 'cdr':                                 # an hourglass
+        t, b, hw = cy - r * 0.85, cy + r * 0.85, r * 0.62
+        top = [(cx - hw, t), (cx + hw, t), (cx, cy)]
+        bot = [(cx - hw, b), (cx + hw, b), (cx, cy)]
+        P.polygon(s, (40, 60, 70), top)
+        P.polygon(s, col, bot)
+        P.polygon(s, lite, [(cx - hw * 0.5, t + r * 0.25), (cx + hw * 0.5, t + r * 0.25), (cx, cy)])
+        P.polygon(s, dark, top, w)
+        P.polygon(s, dark, bot, w)
+        for yy in (t, b):
+            P.line(s, (190, 150, 80), (cx - hw - r * 0.1, yy), (cx + hw + r * 0.1, yy), max(3, int(r * 0.2)))
+    elif stat == 'ls':                                  # a drop of blood
+        cy2 = cy + r * 0.25
+        P.polygon(s, col, [(cx, cy - r * 0.95), (cx - r * 0.56, cy2 - r * 0.1), (cx + r * 0.56, cy2 - r * 0.1)])
+        P.circle(s, col, (int(cx), int(cy2)), int(r * 0.6))
+        P.circle(s, lite, (int(cx - r * 0.2), int(cy2 - r * 0.05)), max(2, int(r * 0.18)))
+        P.circle(s, dark, (int(cx), int(cy2)), int(r * 0.6), w, draw_bottom_left=True, draw_bottom_right=True)
+    else:                                               # 'df': a shield
+        pts = [(cx - r * 0.78, cy - r * 0.8), (cx + r * 0.78, cy - r * 0.8), (cx + r * 0.78, cy + r * 0.1),
+               (cx, cy + r * 0.95), (cx - r * 0.78, cy + r * 0.1)]
+        P.polygon(s, col, pts)
+        P.polygon(s, lite, [(cx, cy - r * 0.8), (cx + r * 0.78, cy - r * 0.8), (cx + r * 0.78, cy + r * 0.1), (cx, cy + r * 0.95)])
+        P.polygon(s, dark, pts, w)
+        P.line(s, dark, (cx, cy - r * 0.8), (cx, cy + r * 0.95), max(1, w // 2))
+
+
+def item_icon(item, colors, size=64):
+    """The picture for a shop item. `item` is its entry from items.ITEMS, `colors` is items.STAT_COLOR.
+    Small items: a small symbol on grey.  Components: a big symbol with a bronze frame.
+    Mythics: both of its stats' symbols on a split background with a gold frame."""
+    S = size * 3
+    s = pygame.Surface((S, S), pygame.SRCALPHA)
+    P = pygame.draw
+    stats = list(item['stats'])
+    tier = item['tier']
+    rad = S // 6
+    box = pygame.Rect(0, 0, S, S)
+    if tier == 3:
+        a, b = (tuple(int(c * 0.34) for c in colors[k]) for k in stats)
+        P.rect(s, a, box, border_radius=rad)
+        clip = pygame.Surface((S, S), pygame.SRCALPHA)
+        P.rect(clip, b, box, border_radius=rad)
+        P.polygon(clip, (0, 0, 0, 0), [(0, 0), (S, 0), (0, S)])
+        s.blit(clip, (0, 0))
+        P.line(s, (255, 230, 150), (S * 0.1, S * 0.9), (S * 0.9, S * 0.1), max(2, S // 60))
+        _stat_symbol(s, stats[0], S * 0.33, S * 0.34, S * 0.21, colors[stats[0]])
+        _stat_symbol(s, stats[1], S * 0.67, S * 0.67, S * 0.21, colors[stats[1]])
+        P.rect(s, (120, 84, 20), box, max(4, S // 16), border_radius=rad)
+        P.rect(s, (255, 214, 90), box.inflate(-S // 22, -S // 22), max(3, S // 30), border_radius=rad)
+    else:
+        P.rect(s, (38, 34, 50) if tier == 1 else (46, 36, 34), box, border_radius=rad)
+        _stat_symbol(s, stats[0], S * 0.5, S * 0.5, S * (0.22 if tier == 1 else 0.33), colors[stats[0]])
+        P.rect(s, (120, 120, 140) if tier == 1 else (205, 140, 80), box, max(3, S // (26 if tier == 1 else 16)),
+               border_radius=rad)
+    return pygame.transform.smoothscale(s, (size, size))

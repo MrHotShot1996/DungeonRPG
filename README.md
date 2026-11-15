@@ -34,10 +34,33 @@ Every 5th floor has a **mini-boss**, every 10th floor has a **major boss**. You 
 
 Each floor has its own look (frozen catacombs, drowned temple, fungal depths, blood cathedral...), and monsters get tougher the deeper you go.
 
-## The Shop
-Every time you take the stairs to a new floor, the Shop opens so you can spend the gold you picked up:
-permanent +HP/+damage/+speed upgrades. Prices go up a little each floor. You can also open
-it anytime from the Pause menu, and leave empty-handed if you'd rather save your gold.
+## The Shop: items (like League of Legends)
+Every time you take the stairs to a new floor, the Shop opens. You can also open it from the Pause menu.
+You carry up to **4 items** (one of each kind), and they make your hero stronger in 5 ways:
+attack damage, ability damage, cooldown reduction, life steal (basic attacks heal you) and defense.
+
+- **Small items** (100 gold): one small stat. Rusty Dagger, Apprentice Wand, Pocket Hourglass, Leech Fang, Leather Vest.
+- **Components** (400 gold, or 300 if you carry its small item): one good stat.
+  Warblade, Arcane Tome, Timekeeper's Clock, Vampire Fang, Iron Plate.
+- **Mythic items** (2200 gold, or 1400 if you carry both components): two stats and a special power.
+
+Pieces you already carry are used up and taken off the price. Selling gives back 60% (press twice).
+Cooldown reduction stops at 35%, life steal at 25% and defense at 40%.
+
+| Mythic | Stats | Power |
+|---|---|---|
+| Arcane Edge | +22% Attack damage, +25% Ability damage | After you use an ability, your next basic attack deals 60% more damage. |
+| Tempo Blade | +22% Attack damage, +10% Cooldown reduction | Every basic attack that hits takes 0.25s off your ability cooldowns. |
+| Crimson Reaver | +22% Attack damage, +8% Life steal | Your life steal is DOUBLED while you are below 40% health. |
+| Titan's Maul | +22% Attack damage, +12% Defense | Basic attacks deal extra damage equal to 2% of your max health. |
+| Echo Staff | +25% Ability damage, +10% Cooldown reduction | Every 6s, your next ability hit blasts every monster around the target. |
+| Soul Drinker | +25% Ability damage, +8% Life steal | Your abilities heal you for 5% of the damage they deal. |
+| Frost Aegis | +25% Ability damage, +12% Defense | Your abilities SLOW the monsters they hit for 1.2s. |
+| Reaper's Hourglass | +10% Cooldown reduction, +8% Life steal | Every kill takes 0.5s off your cooldowns and heals 2% of your health. |
+| Guardian Clock | +10% Cooldown reduction, +12% Defense | Falling below 30% health gives you a shield that blocks everything for 2s (once every 60s). |
+| Bramble Heart | +8% Life steal, +12% Defense | Monsters that hit you up close take a full basic attack of damage back. |
+
+Want different prices or numbers? They are all at the top of `items.py`.
 
 ## Healing (there are no potions)
 - **Every kill** heals 0.5% of your maximum health (it adds up while you fight).
@@ -142,6 +165,7 @@ The mouse works in the menus too. Your choices are saved in `controls.json` (del
 - dungeon.py  - builds random dungeons
 - entities.py - hero, monsters and their brains, spells, loot
 - ai.py       - the monsters' shared brain: pathfinding, taking turns, aiming, dodging
+- items.py    - the shop items: prices, stats, recipes and mythic powers
 - sprites.py  - draws all the pictures with code
 - sounds.py   - makes all sounds and music with math
 - game.py     - the game brain: menus, fighting, abilities, drawing
