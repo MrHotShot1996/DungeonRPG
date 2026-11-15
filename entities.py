@@ -5,6 +5,7 @@ import pygame
 from settings import (TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
                       HURT_INVULN)
 from classes import CLASSES
+from ai import smarts_for, memory_time, lunge_lead
 
 V2 = pygame.Vector2
 BOSS_KINDS = ('boss', 'warlord', 'lich', 'demon')
@@ -239,6 +240,19 @@ class Enemy(Entity):
         self.summon_t = 10.0
         self.spiral_t, self.spiral_on, self.spiral_ang, self.spiral_shot = 5.0, 0.0, 0.0, 0.0
         self.name = BOSS_NAMES.get(kind, '')
+        # ---- brain stuff (see ai.py)
+        self.smarts = smarts_for(floor, self.elite)   # 0 = simple, 1 = fully clever (grows with the floor)
+        self.react_t = 0.0         # just spotted you: a short pause before it may attack
+        self.lost_t = 0.0          # how long it has NOT seen you (it gives up after a while)
+        self.sees, self.see_t = True, 0.0
+        self.nav_t, self.nav_pt = 0.0, None           # the next spot it walks to when a wall is in the way
+        self.flank = (0.0, 0.0)    # a sideways nudge so the pack spreads around you
+        self.stuck_t, self.unstick_t, self.unstick_dir = 0.0, 0.0, (0.0, 0.0)
+        self.kite_dir = (0.0, 0.0)
+        self.dodge_t, self.dodge_cd, self.dodge_dir = 0.0, 0.0, (0.0, 0.0)
+        self.seen = set()          # hero shots it has already decided whether to dodge
+        self.attacker = True       # melee: may it close in right now? (or wait its turn, circling)
+        self.turn_t = self.rest_t = 0.0                 # how long its turn has lasted / rest after a turn
 
     # ---- who do we chase? the player, or a nearby ally that is closer
     def target_pos(self, game):
@@ -288,16 +302,35 @@ class Enemy(Entity):
             return
 
         dpl = math.hypot(p.x - self.x, p.y - self.y) or 1.0
+        brain = game.ai
         if not self.awake:
             if dpl < self.sight and (self.kind == 'wraith' or d.line_clear(self.x, self.y, p.x, p.y)):
                 self.awake = True
+                brain.on_wake(self)
                 if self.kind in BOSS_KINDS:
                     game.audio.play('boss'); game.shake = 0.6
                     game.show_banner(f"{self.name.title()} awakens!")
             else:
                 return
 
+        self.react_t = max(0.0, self.react_t - dt)
+        self.dodge_cd = max(0.0, self.dodge_cd - dt)
+        self.see_t -= dt
+        if self.see_t <= 0:                          # (looking costs a little, so only ~7 times a second)
+            self.see_t = 0.15
+            self.sees = dpl < self.sight * 1.6 and brain.sees_player(self)
+        if self.sees:
+            self.lost_t = 0.0
+        elif (self.kind not in BOSS_KINDS and self.state == 'chase' and not self.warn
+              and not any(abs(m.x - self.x) < 220 and abs(m.y - self.y) < 220 for m in game.minions)):
+            self.lost_t += dt                        # (busy fighting your summons? then it isn't 'lost')
+            if self.lost_t > memory_time(self.smarts):   # lost you for too long: gives up and goes back to sleep
+                self.awake, self.lost_t, self.nav_pt = False, 0.0, None
+                return
+
         tx, ty = self.target_pos(game)
+        if not self.attacker and (tx, ty) == (p.x, p.y) and self.state == 'chase':
+            tx, ty = brain.ring_point(self)          # not its turn: circle around you, waiting for a gap
         dx, dy = tx - self.x, ty - self.y
         dist = math.hypot(dx, dy) or 1.0
         nx, ny = dx / dist, dy / dist
@@ -307,34 +340,52 @@ class Enemy(Entity):
         sp = self.speed * (0.45 if self.slow_t > 0 else 1.0)
         k = self.kind
 
-        if k == 'slime':
+        dodging = False                              # a quick sidestep away from one of your shots
+        if self.dodge_t > 0:
+            self.dodge_t -= dt
+            self.move(self.dodge_dir[0] * max(sp, 80) * 2.6 * dt, self.dodge_dir[1] * max(sp, 80) * 2.6 * dt, d)
+            dodging = True
+        elif self.state == 'chase' and not self.warn:
+            brain.try_dodge(self)
+
+        if dodging:
+            pass
+
+        elif k == 'slime':
             hop = 0.25 + 0.75 * max(0.0, math.sin(self.anim * 4))
-            self.move(nx * sp * hop * dt, ny * sp * hop * dt, d)
+            self.chase_move(game, tx, ty, sp * hop, dt)
 
         elif k == 'bat':
-            w = math.sin(self.anim * 5)
-            vx, vy = nx - ny * w * 0.9, ny + nx * w * 0.9
-            l = math.hypot(vx, vy) or 1
-            self.move(vx / l * sp * dt, vy / l * sp * dt, d)
+            self.chase_move(game, tx, ty, sp, dt, wobble=math.sin(self.anim * 5) * 0.9)
 
         elif k == 'skeleton':
-            self.keep_distance(pnx, pny, dpl, sp, dt, d, 230, 140)
+            self.kite_move(game, sp, dt, 230, 140, 0.6)
             self.shoot_t -= dt
             if self.shoot_t <= 0 and dpl < 400 and d.line_clear(self.x, self.y, p.x, p.y):
-                self.shoot_t = 2.3
-                game.projectiles.append(Projectile(self.x, self.y, pnx * 210, pny * 210, self.dmg, (240, 240, 220)))
-                game.audio.play('shoot')
+                if brain.can_shoot(self):
+                    self.shoot_t = 2.3
+                    ax, ay = brain.aim(self, 210)
+                    game.projectiles.append(Projectile(self.x, self.y, ax * 210, ay * 210, self.dmg, (240, 240, 220)))
+                    game.audio.play('shoot')
+                    brain.shot_fired()
+                else:                                # someone else is shooting right now: wait a moment
+                    self.shoot_t = random.uniform(0.2, 0.5)
 
         elif k == 'goblin':      # runs at you, then does a sneaky LUNGE
             if self.state == 'chase':
-                self.move(nx * sp * dt, ny * sp * dt, d)
-                if self.state_t <= 0 and 90 < dist < 260 and d.line_clear(self.x, self.y, tx, ty):
+                self.chase_move(game, tx, ty, sp, dt)
+                if (self.state_t <= 0 and 90 < dist < 260 and d.line_clear(self.x, self.y, tx, ty)
+                        and brain.can_windup(self)):
                     self.state, self.state_t, self.warn = 'wind', 0.4, True
+                    brain.start_windup(self)
                     game.audio.play('warn')
             elif self.state == 'wind':
                 if self.state_t <= 0:
                     self.state, self.state_t, self.warn = 'lunge', 0.35, False
-                    self.vec = (nx, ny)
+                    if (tx, ty) == (p.x, p.y):       # deeper down, it lunges a bit toward where you are RUNNING
+                        self.vec = brain.aim(self, sp * 4.2, lead=lunge_lead(self.smarts))
+                    else:
+                        self.vec = (nx, ny)
             else:
                 self.move(self.vec[0] * sp * 4.2 * dt, self.vec[1] * sp * 4.2 * dt, d)
                 if self.state_t <= 0:
@@ -342,12 +393,13 @@ class Enemy(Entity):
 
         elif k == 'imp':         # runs up and EXPLODES
             if self.state == 'chase':
-                self.move(nx * sp * dt, ny * sp * dt, d)
-                if dist < 60:
+                self.chase_move(game, tx, ty, sp, dt)
+                if dist < 60 and brain.can_windup(self):
                     self.state, self.state_t, self.warn = 'fuse', 0.7, True
+                    brain.start_windup(self)
                     game.audio.play('warn')
             else:
-                self.move(nx * sp * 0.3 * dt, ny * sp * 0.3 * dt, d)
+                self.chase_move(game, tx, ty, sp * 0.3, dt)
                 if self.state_t <= 0:
                     game.explosion(self.x, self.y, 85, int(self.dmg * 1.6))
                     if self in game.enemies:
@@ -355,19 +407,25 @@ class Enemy(Entity):
                     return
 
         elif k == 'spider':      # keeps away and spits slowing webs
-            self.keep_distance(pnx, pny, dpl, sp, dt, d, 240, 150, strafe=0.9)
+            self.kite_move(game, sp, dt, 240, 150, 0.9)
             self.shoot_t -= dt
             if self.shoot_t <= 0 and dpl < 380 and d.line_clear(self.x, self.y, p.x, p.y):
-                self.shoot_t = 2.6
-                game.projectiles.append(Projectile(self.x, self.y, pnx * 230, pny * 230, max(1, self.dmg // 2),
-                                                   (235, 235, 245), 6, effect='slow'))
-                game.audio.play('shoot')
+                if brain.can_shoot(self):
+                    self.shoot_t = 2.6
+                    ax, ay = brain.aim(self, 230)
+                    game.projectiles.append(Projectile(self.x, self.y, ax * 230, ay * 230, max(1, self.dmg // 2),
+                                                       (235, 235, 245), 6, effect='slow'))
+                    game.audio.play('shoot')
+                    brain.shot_fired()
+                else:
+                    self.shoot_t = random.uniform(0.2, 0.5)
 
         elif k == 'brute':       # slow, but SLAMS the ground (watch for the "!")
             if self.state == 'chase':
-                self.move(nx * sp * dt, ny * sp * dt, d)
-                if dist < 125 and self.state_t <= 0:
+                self.chase_move(game, tx, ty, sp, dt)
+                if dist < 125 and self.state_t <= 0 and brain.can_windup(self):
                     self.state, self.state_t, self.warn = 'wind', 0.75, True
+                    brain.start_windup(self)
                     game.audio.play('warn')
             elif self.state_t <= 0:
                 game.slam(self.x, self.y, 100, int(self.dmg * 1.3))
@@ -375,21 +433,27 @@ class Enemy(Entity):
 
         elif k == 'wraith':      # floats THROUGH walls
             f = 0.6 + 0.4 * math.sin(self.anim * 2)
-            self.x += nx * sp * f * dt
-            self.y += ny * sp * f * dt
+            wx, wy = brain.steer(self, tx, ty)
+            self.x += wx * sp * f * dt
+            self.y += wy * sp * f * dt
 
         elif k == 'cultist':     # blinks around and fires 3 dark bolts
-            self.keep_distance(pnx, pny, dpl, sp, dt, d, 260, 170)
+            self.kite_move(game, sp, dt, 260, 170, 0.6)
             self.shoot_t -= dt
             if self.shoot_t <= 0 and dpl < 420 and d.line_clear(self.x, self.y, p.x, p.y):
-                self.shoot_t = 3.0
-                base = math.atan2(pny, pnx)
-                for da in (-0.28, 0, 0.28):
-                    game.projectiles.append(Projectile(self.x, self.y, math.cos(base + da) * 190,
-                                                       math.sin(base + da) * 190, self.dmg, (210, 70, 255), 6))
-                game.audio.play('shoot')
+                if brain.can_shoot(self):
+                    self.shoot_t = 3.0
+                    ax, ay = brain.aim(self, 190)
+                    base = math.atan2(ay, ax)
+                    for da in (-0.28, 0, 0.28):
+                        game.projectiles.append(Projectile(self.x, self.y, math.cos(base + da) * 190,
+                                                           math.sin(base + da) * 190, self.dmg, (210, 70, 255), 6))
+                    game.audio.play('shoot')
+                    brain.shot_fired()
+                else:
+                    self.shoot_t = random.uniform(0.2, 0.5)
             self.tele_t -= dt
-            if self.tele_t <= 0:
+            if self.tele_t <= 0 and self.lost_t < 1.5:   # (only blinks to you if it has just seen you)
                 self.tele_t = random.uniform(5, 7)
                 for _ in range(12):
                     a, r = random.random() * 6.283, random.uniform(170, 240)
@@ -404,13 +468,16 @@ class Enemy(Entity):
 
         elif k == 'warlord':     # MINI-BOSS: charges, slams, and calls goblins when hurt
             if self.state == 'chase':
-                self.move(nx * sp * dt, ny * sp * dt, d)
+                self.chase_move(game, tx, ty, sp, dt)
                 if self.state_t <= 0:
                     if dist < 160:
                         self.state, self.state_t, self.warn = 'slamwind', 0.9, True
-                    else:
+                        game.audio.play('warn')
+                    elif brain.clear_run(self, tx, ty):      # (only charges if no wall is in the way)
                         self.state, self.state_t, self.warn = 'wind', 0.8, True
-                    game.audio.play('warn')
+                        game.audio.play('warn')
+                    else:
+                        self.state_t = 0.3
             elif self.state == 'wind':
                 if self.state_t <= 0:
                     self.state, self.state_t, self.warn = 'charge', 0.6, False
@@ -436,7 +503,7 @@ class Enemy(Entity):
 
         elif k == 'boss':        # FINAL BOSS: three phases
             if dist > 80:
-                self.move(nx * sp * dt, ny * sp * dt, d)
+                self.chase_move(game, tx, ty, sp, dt)
             frac = self.hp / self.max_hp
             want = 1 if frac > 0.66 else 2 if frac > 0.33 else 3
             if want > self.phase:
@@ -481,7 +548,7 @@ class Enemy(Entity):
                                                            (255, 90, 160), 6))
 
         elif k == 'lich':        # MINI-BOSS (floor 15): keeps away, fans of ice bolts, blinks, raises skeletons
-            self.keep_distance(pnx, pny, dpl, sp, dt, d, 270, 180)
+            self.kite_move(game, sp, dt, 270, 180, 0.6)
             if self.phase == 1 and self.hp < self.max_hp * 0.5:
                 self.phase = 2
                 self.speed *= 1.2
@@ -542,13 +609,16 @@ class Enemy(Entity):
                         game.enemies[-1].awake = True
             if self.state == 'chase':
                 if dist > 70:
-                    self.move(nx * sp * dt, ny * sp * dt, d)
+                    self.chase_move(game, tx, ty, sp, dt)
                 if self.state_t <= 0:
                     if dist < 180:
                         self.state, self.state_t, self.warn = 'slamwind', 0.8, True
-                    else:
+                        game.audio.play('warn')
+                    elif brain.clear_run(self, tx, ty):
                         self.state, self.state_t, self.warn = 'wind', 0.7, True
-                    game.audio.play('warn')
+                        game.audio.play('warn')
+                    else:
+                        self.state_t = 0.3
             elif self.state == 'wind':
                 if self.state_t <= 0:
                     self.state, self.state_t, self.warn = 'charge', 0.55, False
@@ -612,14 +682,25 @@ class Enemy(Entity):
                 if r.colliderect(m.rect):
                     m.hurt(self.dmg, game)
 
-    def keep_distance(self, nx, ny, dist, sp, dt, d, far, near, strafe=0.6):
-        if dist > far:
-            mx, my = nx, ny
-        elif dist < near:
-            mx, my = -nx, -ny
-        else:
-            mx, my = -ny * self.strafe * strafe, nx * self.strafe * strafe
-        self.move(mx * sp * dt, my * sp * dt, d)
+    def chase_move(self, game, tx, ty, sp, dt, wobble=0.0):
+        """Walk toward (tx, ty) - around walls, and spreading out from friends (see ai.py)."""
+        brain = game.ai
+        mx, my = brain.steer(self, tx, ty)
+        if wobble:                                   # (bats flutter from side to side)
+            mx, my = mx - my * wobble, my + mx * wobble
+            l = math.hypot(mx, my) or 1.0
+            mx, my = mx / l, my / l
+        ox, oy = self.x, self.y
+        self.move(mx * sp * dt, my * sp * dt, game.dungeon)
+        brain.track(self, ox, oy, sp * dt, mx, my, dt)
+
+    def kite_move(self, game, sp, dt, far, near, strafe):
+        """Ranged monsters: stay at shooting distance, in the open, with a clear shot (see ai.py)."""
+        brain = game.ai
+        mx, my = brain.kite(self, far, near, strafe)
+        ox, oy = self.x, self.y
+        self.move(mx * sp * dt, my * sp * dt, game.dungeon)
+        brain.track(self, ox, oy, sp * dt, mx, my, dt)
 
 
 # ====================================================================== ALLIES

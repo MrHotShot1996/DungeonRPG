@@ -52,6 +52,19 @@ it anytime from the Pause menu, and leave empty-handed if you'd rather save your
 - The game draws in step with your monitor (60 FPS on a 60 Hz screen, up to 144 on a fast one).
   Press **F3** to show the FPS counter.
 
+## Smarter monsters
+Monsters find their way around walls and down hallways, spread out instead of piling up, and take
+TURNS: only a few close in on you at once while the rest circle around, waiting for a gap. Only a few
+can wind up a big attack (lunge, slam, explode) or shoot at the same moment, and they never shoot
+from off-screen. A yellow "!" shows when a monster spots you (it pauses a moment before attacking).
+If you get away and stay out of sight long enough, they give up.
+
+They get cleverer the deeper you go. On floor 1 they simply walk at you. Further down they come at you
+from the sides, aim some shots ahead of where you're running (change direction to dodge!), sometimes
+sidestep your shots, and warn nearby friends when they spot you.
+Too hard or too easy? In settings.py, AI_DIFFICULTY = 0.5 makes them half as clever (0 = no tricks),
+and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
+
 ## Keyboard controls (default)
 | Key | What it does |
 |---|---|
@@ -126,6 +139,7 @@ The mouse works in the menus too. Your choices are saved in `controls.json` (del
 - biomes.py   - the look of each floor
 - dungeon.py  - builds random dungeons
 - entities.py - hero, monsters and their brains, spells, loot
+- ai.py       - the monsters' shared brain: pathfinding, taking turns, aiming, dodging
 - sprites.py  - draws all the pictures with code
 - sounds.py   - makes all sounds and music with math
 - game.py     - the game brain: menus, fighting, abilities, drawing

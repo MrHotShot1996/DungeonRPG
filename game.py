@@ -8,6 +8,7 @@ import pygame
 
 from settings import *
 from dungeon import Dungeon, FLOOR
+from ai import Brain
 from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
 from sprites import Sprites, make_icon, ui_icon, shade, add
 from sounds import Audio, MUSIC_TRACKS
@@ -324,6 +325,7 @@ class Game:
         self.pal = biome(self.floor)
         self.fog_img = self.make_fog(self.pal['mote'])
         self.dungeon = Dungeon(self.floor)
+        self.ai = Brain(self)                         # the monsters' shared brain for this floor (ai.py)
         rooms = self.dungeon.rooms
         p = self.player
         cx, cy = rooms[0].center
@@ -579,6 +581,7 @@ class Game:
             e.curse_dmg += dmg                       # ...and remembers it, for a bigger burst at the end
         e.hp -= dmg
         e.awake = True
+        e.lost_t = 0.0                                # (getting hit reminds it where you are)
         if dot:
             self.float_text(e.x, e.y - 18, str(dmg), (120, 230, 100))
         else:
@@ -1645,6 +1648,7 @@ class Game:
                     self.trail.remove(tr)
             p.update(dt, self.input, self)
             self.update_flowers()
+            self.ai.update(dt)
             for e in self.enemies[:]:
                 if e in self.enemies:
                     e.update(dt, self)

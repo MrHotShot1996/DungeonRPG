@@ -24,3 +24,8 @@ ELITE_CHANCE_MAX = 0.32       # the most often a monster can be an ELITE (deep f
 HURT_INVULN = 0.8             # seconds you can't be hurt again after taking a hit (was 0.9)
 STAIRS_HEAL = 0.10            # free heal when you take the stairs (part of your max health; was 0.20)
 LEVELUP_HEAL = 0.20           # free heal when you level up (was 0.30)
+
+# ---- MONSTER BRAINS (see ai.py). Monsters get cleverer the deeper you go: on floor 1 they just walk at you,
+# and by AI_SMARTS_FULL_FLOOR they aim ahead of you, sidestep some of your shots and come at you from the sides.
+AI_SMARTS_FULL_FLOOR = 16     # the floor where monsters reach full cleverness
+AI_DIFFICULTY = 1.0           # 0.5 = monsters only get half as clever, 0 = no clever tricks at all
