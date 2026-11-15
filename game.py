@@ -55,6 +55,17 @@ FREEZE_TIME = 2.5                                  # Ghala's Frozen Heart: secon
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
 
+def gold_scale(floor):
+    """How much a coin is worth on this floor (settings.py: GOLD_MULT and GOLD_PER_FLOOR).
+    Deeper floors already have more monsters, rooms and chests, so coins themselves only grow a little."""
+    return GOLD_MULT * (1 + GOLD_PER_FLOOR * (floor - 1))
+
+
+def gold(amount, floor):
+    """A coin or chest value, scaled for the floor (never less than 1)."""
+    return max(1, round(amount * gold_scale(floor)))
+
+
 def spawn_weights(floor):
     """Which monsters can appear on which floor (and how often)."""
     return {
@@ -356,7 +367,7 @@ class Game:
             if random.random() < 0.65:
                 for _ in range(random.randint(2, 5)):
                     x, y = self.dungeon.random_spot(room)
-                    self.items.append(Item('coin', x, y, random.randint(2, 5) * self.floor))
+                    self.items.append(Item('coin', x, y, gold(random.randint(2, 5), self.floor)))
             if random.random() < 0.4:
                 self.items.append(Item('chest', *self.dungeon.random_spot(room)))
 
@@ -697,7 +708,7 @@ class Game:
             n = random.randint(1, 3) if e.kind not in BOSS_KINDS else 10
             for _ in range(n + (3 if e.elite else 0)):
                 self.items.append(Item('coin', e.x + random.randint(-18, 18), e.y + random.randint(-18, 18),
-                                       random.randint(3, 8) * self.floor))
+                                       gold(random.randint(3, 8), self.floor)))
         self.float_text(e.x, e.y - 36, f"+{e.xp} XP", (140, 195, 255))
         while p.xp >= p.xp_next:
             p.xp -= p.xp_next
@@ -724,7 +735,7 @@ class Game:
             if major:                                   # a major boss throws a little treasure party
                 for _ in range(8):
                     self.items.append(Item('coin', e.x + random.randint(-40, 40), e.y + random.randint(-40, 40),
-                                           random.randint(6, 12) * self.floor))
+                                           gold(random.randint(6, 12), self.floor)))
 
     def level_up(self):
         """Leveling up is AUTOMATIC: every hero grows a little stronger each level."""
@@ -1562,7 +1573,7 @@ class Game:
                 self.items.remove(it)
             elif it.kind == 'chest' and not it.opened:
                 it.opened = True
-                g = random.randint(15, 35) * self.floor
+                g = gold(random.randint(15, 35), self.floor)
                 p.gold += g
                 self.audio.play('chest')
                 self.float_text(it.x, it.y - 20, f"+{g} gold!", (255, 215, 70), big=True)

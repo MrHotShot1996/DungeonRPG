@@ -49,6 +49,8 @@ it anytime from the Pause menu, and leave empty-handed if you'd rather save your
 ## Difficulty and speed
 - Want the game easier or harder? Open `settings.py` and change the numbers in the **DIFFICULTY** block
   (monster health, damage, speed, how many monsters per room, how much you heal for free).
+- Leveling too fast or too slow? Change `XP_MULT`. Too much or too little gold? Change `GOLD_MULT`
+  (and `GOLD_PER_FLOOR`, how much more coins are worth on deeper floors).
 - The game draws in step with your monitor (60 FPS on a 60 Hz screen, up to 144 on a fast one).
   Press **F3** to show the FPS counter.
 

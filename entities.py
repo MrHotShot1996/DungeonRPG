@@ -3,7 +3,7 @@ import math
 import random
 import pygame
 from settings import (TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
-                      HURT_INVULN)
+                      HURT_INVULN, XP_MULT)
 from classes import CLASSES
 from ai import smarts_for, memory_time, lunge_lead
 
@@ -217,7 +217,7 @@ class Enemy(Entity):
         self.max_hp = self.hp = int(d['hp'] * hp_scale * (2.2 if self.elite else 1.0))
         self.dmg = int(d['dmg'] * dmg_scale * (1.25 if self.elite else 1.0))
         self.speed = d['speed'] * min(1.3, 1 + 0.03 * (floor - 1)) * (1.0 if boss else ENEMY_SPEED_MULT)
-        self.xp = int(d['xp'] * (1 + 0.22 * (floor - 1)) * (2.5 if self.elite else 1.0))
+        self.xp = max(1, int(d['xp'] * (1 + 0.22 * (floor - 1)) * (2.5 if self.elite else 1.0) * XP_MULT))
         self.sight = d['sight']
         self.awake = False
         self.flash = 0.0
