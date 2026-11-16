@@ -36,6 +36,12 @@ ABILITY_MAX_RANK = 5
 SKILL_POINT_FROM, SKILL_POINT_EVERY = 4, 3
 RANK_DAMAGE = 0.22
 RANK_COOLDOWN = 0.10
+# ---- Arcane Explorer
+ESSENCE_TIME = 4.0            # Essence Wave: seconds a mark lasts
+ESSENCE_BURST = 1.2           # ...how hard the mark bursts (x your damage) when you hit the marked monster
+SHIFT_RANGE = 170             # Arcane Shift: how far you blink (pixels)
+SHIFT_RADIUS = 95             # ...the blast where you land
+TRUESHOT_DECAY = 0.10         # Trueshot Barrage: each monster after the first takes 10% less (never under half)
 SKILL_LOCK = 1.0              # seconds the ability-point screen ignores every button when it opens (so a held
                               # attack button can't pick something by accident)
 SKILL_LOCK_NEXT = 0.4         # ...and between picks, when you have more than one point to spend

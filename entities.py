@@ -2,7 +2,7 @@
 import math
 import random
 import pygame
-from settings import (TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
+from settings import (MAP_W, MAP_H, TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
                       HURT_INVULN, XP_MULT)
 from classes import CLASSES
 from ai import smarts_for, memory_time, lunge_lead
@@ -876,7 +876,7 @@ class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
                  kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None,
-                 src='ability'):
+                 src='ability', ghost=False, decay=0.0, essence=False):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
@@ -885,6 +885,9 @@ class Bolt:
         self.freeze = freeze   # Ghala's Frozen Heart: seconds the monster it hits stays frozen
         self.falloff = falloff # Shadow Ninja's shurikens: every hit after the FIRST does this much of the damage
         self.volley = volley   # ...a set shared by all shurikens of one throw: the monsters that throw already hit
+        self.ghost = ghost     # Trueshot Barrage: flies through walls, until it leaves the map
+        self.decay = decay     # ...and each monster after the first takes this much less (never under half)
+        self.essence = essence # Essence Wave: marks the monsters it hits
         self.alive = True
         self.hit = set()
 
@@ -903,10 +906,23 @@ class Bolt:
         if self.kind == 'shuriken':                      # shurikens leave a thin, dark trail (not a bright one)
             if random.random() < 0.5 * game.fx:
                 game.particles.append(Particle(self.x, self.y, 0, 0, 0.22, (70, 45, 130), 3))
+        elif self.kind == 'mystic':                      # a thin streak: no sparkly trail
+            pass
+        elif self.kind == 'barrage':                     # the big crescent sheds golden sparks all along it
+            if random.random() < 0.9 * game.fx:
+                sp = math.hypot(self.vx, self.vy) or 1
+                k = random.uniform(-1, 1) * self.radius
+                game.particles.append(Particle(self.x - self.vy / sp * k, self.y + self.vx / sp * k,
+                                               -self.vx * 0.1, -self.vy * 0.1, 0.4, self.color, 4, glow=True))
         elif random.random() < 0.8 * game.fx:
             game.particles.append(Particle(self.x, self.y, random.uniform(-20, 20), random.uniform(-20, 20),
                                            0.3, self.color, 3, glow=True))
-        if self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):
+        if self.ghost:                                   # goes through walls; gone once it leaves the map
+            off = not (-200 < self.x < MAP_W * TILE + 200 and -200 < self.y < MAP_H * TILE + 200)
+            if self.life <= 0 or off:
+                self.alive = False
+                return
+        elif self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):
             if self.aoe:
                 self.explode(game)
             self.alive = False
@@ -923,6 +939,8 @@ class Bolt:
                     self.explode(game)
                     return
                 dmg = self.dmg if first else self.dmg * self.falloff     # (falloff is 1.0 for everything but shurikens)
+                if self.decay:                                            # Trueshot Barrage: less for each one after
+                    dmg = self.dmg * max(0.5, 1 - self.decay * (len(self.hit) - 1))
                 game.damage_enemy(e, int(dmg), crit=self.crit, origin=(self.x - self.vx, self.y - self.vy),
                                   leech=self.leech, src=self.src)
                 if self.mark and e in game.enemies:   # only mark it if the hit didn't kill it outright
@@ -932,6 +950,8 @@ class Bolt:
                     game.float_text(e.x, e.y - 40, "MARKED!", (255, 210, 90), big=True)
                 if self.freeze and e in game.enemies:
                     game.freeze_enemy(e, self.freeze)
+                if self.essence and e in game.enemies:
+                    game.essence_mark(e)
                 if not self.pierce:
                     self.alive = False
                     return

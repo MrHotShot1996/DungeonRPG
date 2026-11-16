@@ -6,15 +6,19 @@
 3. Run:  `python main.py`   (Mac/Linux: `python3 main.py`)
    - If pygame is missing, main.py installs it for you automatically.
 
-## Pick your hero (8 classes, 20 floors)
+## Pick your hero (9 classes, 20 floors)
 Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
-the Shadow Ninja,
+the Shadow Ninja, the Arcane Explorer,
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a
 War Cry, and grows his sword with Greatblade (more damage and reach - press it again to throw blade waves).
 The Vampire Lord drains blood from monsters to heal a little (Blood Drain), sinks into a Blood Pool where nothing
 can hurt him while monsters standing on it take damage, and throws a Blood Curse: cursed monsters take 25% more
 damage from you, then burst after 4 seconds - the more you hurt them, the bigger the burst - and the burst heals you.
+The Arcane Explorer shoots quick golden bolts from his gauntlet. Essence Wave is a crescent that flies through
+monsters and marks them (hit a marked monster again to burst the mark), Arcane Shift blinks you forward, blasts
+monsters where you land and fires a bolt at the nearest one, and Trueshot Barrage is a HUGE crescent that crosses
+the whole map through walls (each monster after the first takes 10% less, never under half).
 The Shadow Ninja throws 3 Shadow Shurikens that fly through monsters (the first hit is the hardest - every hit
 after it does half), sends out a Living Shadow for 5 seconds that copies his other two abilities from where it
 stands (press the ability again to swap places with it, once per shadow), and cuts everything around him with

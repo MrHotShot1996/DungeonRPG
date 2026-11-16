@@ -562,11 +562,11 @@ class Game:
             d = self.aim_dir()
             p.face = V2(d)
             kind = c.get('bolt_kind', 'magic')
-            self.audio.play('cast' if kind == 'magic' else 'knife')
-            speed = 560 if kind == 'arrow' else 400
+            self.audio.play('cast' if kind == 'magic' else 'zap' if kind == 'mystic' else 'knife')
+            speed = {'arrow': 560, 'mystic': 640}.get(kind, 400)
             self.bolts.append(Bolt(p.x + d.x * 16, p.y + d.y * 16, d.x * speed, d.y * speed,
                                    self.basic_damage(1) * self.spellblade(True), c.get('bolt', (205, 130, 255)),
-                                   4 if kind == 'arrow' else 6, 1.1, kind=kind, crit=None, src='basic'))
+                                   4 if kind in ('arrow', 'mystic') else 6, 1.1, kind=kind, crit=None, src='basic'))
             self.burst(p.x + d.x * 18, p.y + d.y * 18, c.get('bolt', (255, 255, 255)), 4, 80, glow=True)
             return
         p.swing = 0.16
@@ -707,6 +707,8 @@ class Game:
             self.kill_enemy(e)
         if p.items and src not in ('ally', 'item'):  # shop item powers (last, so a blast can't kill `e` twice)
             self.item_on_hit(e, dealt, src)
+        if src in ('basic', 'ability') and e in self.enemies and getattr(e, 'essence_until', 0) > self.run_time:
+            self.essence_burst(e)                    # Essence Wave's mark bursts
 
     def aoe(self, x, y, radius, dmg, knock=250, stun=0.0, slow=0.0, poison=0.0, poison_t=0.0,
             color=(255, 255, 255), crit=False, ring=True, exclude=None):
@@ -1600,6 +1602,75 @@ class Game:
         if sh['t'] <= 0:                                     # time is up: it melts away
             self.shadow = None
             self.burst(g.x, g.y, (120, 80, 200), 14, 120, glow=True)
+
+    # -- Arcane Explorer
+    def essence_mark(self, e):
+        """Essence Wave marks a monster. Your next attack or ability on it bursts the mark."""
+        e.essence_until = self.run_time + ESSENCE_TIME
+
+    def essence_burst(self, e):
+        e.essence_until = 0
+        self.audio.play('zap')
+        self.burst(e.x, e.y, (255, 220, 110), 14, 170, glow=True)
+        self.shockwave(e.x, e.y, 34, (255, 214, 90))
+        self.damage_enemy(e, self.power(ESSENCE_BURST, 'essence_wave'), crit=False, knock=False, src='mark')
+
+    def ab_essence_wave(self):
+        """A golden crescent that flies through monsters and marks every one it hits."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        self.audio.play('cast')
+        self.bolts.append(Bolt(p.x + d.x * 18, p.y + d.y * 18, d.x * 460, d.y * 460, self.power(1.5),
+                               (255, 214, 90), 15, 1.0, pierce=True, kind='crescent', essence=True))
+        self.burst(p.x + d.x * 20, p.y + d.y * 20, (255, 230, 140), 10, 130, glow=True)
+
+    def ab_arcane_shift(self):
+        """Blink forward (the way you face), stopping at walls. Blast monsters where you land, and fire a
+        bolt at the nearest monster."""
+        p = self.player
+        d = V2(p.face) if p.face.length_squared() else V2(0, 1)
+        d = d.normalize()
+        sx, sy = p.x, p.y
+        x, y, moved = p.x, p.y, 0.0
+        while moved < SHIFT_RANGE:                     # walk the line in small steps; stop before any wall
+            st = min(6.0, SHIFT_RANGE - moved)
+            nx, ny = x + d.x * st, y + d.y * st
+            if self.dungeon.hits_wall(pygame.Rect(int(nx - p.w / 2), int(ny - p.h / 2), p.w, p.h)):
+                break
+            x, y, moved = nx, ny, moved + st
+        self.audio.play('warp')
+        self.burst(sx, sy, (120, 210, 255), 16, 150, glow=True)
+        for k in range(10):                            # a sparkly line from where you were to where you are
+            f = k / 9
+            self.particles.append(Particle(sx + (x - sx) * f, sy + (y - sy) * f, random.uniform(-20, 20),
+                                           random.uniform(-20, 20), 0.35, (170, 230, 255), 3, True))
+        p.x, p.y = x, y
+        p.kx = p.ky = 0.0
+        p.invuln = max(p.invuln, 0.25)
+        self.burst(p.x, p.y, (255, 230, 140), 18, 170, glow=True)
+        self.aoe(p.x, p.y, SHIFT_RADIUS, self.power(1.3), knock=200, color=(140, 215, 255))
+        near = self.nearest_enemies(p.x, p.y, 340, 1)
+        if near:
+            e = near[0]
+            v = V2(e.x - p.x, e.y - p.y)
+            v = v.normalize() if v.length_squared() else V2(d)
+            self.bolts.append(Bolt(p.x + v.x * 14, p.y + v.y * 14, v.x * 700, v.y * 700, self.power(1.0),
+                                   (255, 225, 110), 5, 0.8, kind='mystic'))
+
+    def ab_trueshot(self):
+        """A HUGE crescent that crosses the whole map, through walls."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        self.audio.play('nova')
+        self.audio.play('boom')
+        self.shake = max(self.shake, 0.35)
+        self.bolts.append(Bolt(p.x + d.x * 20, p.y + d.y * 20, d.x * 900, d.y * 900, self.power(3.0),
+                               (255, 200, 80), 46, 6.0, pierce=True, kind='barrage', ghost=True,
+                               decay=TRUESHOT_DECAY))
+        self.burst(p.x + d.x * 24, p.y + d.y * 24, (255, 220, 120), 30, 260, glow=True)
+        self.shockwave(p.x, p.y, 60, (255, 214, 90))
 
     def update_blood(self, dt):
         p = self.player
@@ -2497,6 +2568,13 @@ class Game:
             pygame.draw.circle(scr, (255, 235, 150), (sx, int(top - 14)), 7)
             pygame.draw.circle(scr, (255, 255, 235), (sx, int(top - 14)), 4)
             self.add_glow(sx, int(top - 14), 34, (255, 235, 150), 1.0)
+        left = getattr(o, 'essence_until', 0) - self.run_time
+        if left > 0:                                         # Essence Wave's mark: a golden ring that spins
+            for k in range(3):
+                a = self.t * 4 + k * 2.094
+                pygame.draw.arc(scr, (255, 214, 90), (sx - 16, int(top - 30), 32, 32), a, a + 1.2, 3)
+            pygame.draw.circle(scr, (255, 240, 170), (sx, int(top - 14)), 4 if left > 1 or int(self.t * 10) % 2 else 2)
+            self.add_glow(sx, int(top - 14), 36, (255, 214, 90), 0.8)
         if o.curse_t > 0:                                    # Blood Curse: a drop of blood that fills as it ticks down
             k = 1 - o.curse_t / CURSE_TIME
             dy = int(top - 16)
@@ -2752,6 +2830,26 @@ class Game:
                 pygame.draw.line(scr, b.color, (sx, sy), (sx - ux * ln, sy - uy * ln), 3)
                 pygame.draw.circle(scr, (255, 255, 255), (sx, sy), 2)
                 self.add_glow(sx, sy, 26, b.color, 0.6)
+            elif b.kind == 'mystic':                                         # Explorer's bolt: a thin golden streak
+                n = math.hypot(b.vx, b.vy) or 1
+                ux, uy = b.vx / n, b.vy / n
+                pygame.draw.line(scr, b.color, (sx, sy), (sx - ux * 22, sy - uy * 22), 3)
+                pygame.draw.line(scr, (255, 255, 235), (sx, sy), (sx - ux * 12, sy - uy * 12), 1)
+                self.add_glow(sx, sy, 28, b.color, 0.7)
+                lights.append((b.x, b.y, 60, b.color, 0.35, 0.3))
+            elif b.kind in ('crescent', 'barrage'):                          # Explorer's crescents (small and HUGE)
+                ang = math.atan2(b.vy, b.vx)
+                big = b.kind == 'barrage'
+                rr = b.radius + (10 if big else 6)
+                back = rr * 0.6
+                layers = ((rr, 16, b.color), (rr - 4, 8, (255, 235, 160)), (rr - 7, 3, (255, 255, 240))) if big else \
+                         ((rr, 7, b.color), (rr - 2, 3, (255, 250, 220)))
+                for r_, wd, col in layers:
+                    pts = [(sx - math.cos(ang) * back + math.cos(ang - 1.1 + 2.2 * i / 14) * r_,
+                            sy - math.sin(ang) * back + math.sin(ang - 1.1 + 2.2 * i / 14) * r_) for i in range(15)]
+                    pygame.draw.lines(scr, col, False, pts, wd)
+                self.add_glow(sx, sy, 150 if big else 56, b.color, 1.3 if big else 0.9)
+                lights.append((b.x, b.y, 220 if big else 90, b.color, 0.7 if big else 0.45, 0.6 if big else 0.4))
             elif b.kind == 'shuriken':                                       # a spinning 4-point star
                 a0 = t * 26
                 pts = [(sx + math.cos(a0 + i * 0.7854) * (b.radius + 3 if i % 2 == 0 else b.radius * 0.36),

@@ -5,7 +5,7 @@ growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
 NO_DAMAGE = ('shield_wall', 'living_shadow')   # ranking these up only shortens their cooldown
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja']
+CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer']
 
 CLASSES = {
     'knight': dict(
@@ -77,6 +77,15 @@ CLASSES = {
                      plume=None, head='hood', weapon='dagger', face='dark', orb=(255, 70, 80),
                      collar=(190, 40, 55)),
         abilities=['shadow_shuriken', 'living_shadow', 'shadow_slash']),
+    'explorer': dict(
+        name='Arcane Explorer', short='Explorer', title='The Arcane Explorer', color=(255, 214, 90),
+        blurb='A daring treasure hunter whose golden gauntlet shoots arcane bolts.',
+        hp=48, dmg=10, speed=190, crit=0.12, atk='ranged', atk_cd=0.34, reach=0, hitsize=0,
+        dash_cd=0.8, growth=(7, 2), role='Ranged marksman',
+        bolt=(255, 225, 110), bolt_kind='mystic',
+        palette=dict(armor=(52, 92, 168), trim=(214, 170, 70), legs=(92, 70, 52), helm=(246, 214, 120),
+                     plume=None, head='hair', weapon='gauntlet', orb=(255, 228, 120)),
+        abilities=['essence_wave', 'arcane_shift', 'trueshot']),
 }
 
 ABILITIES = {
@@ -143,4 +152,14 @@ ABILITIES = {
     'shadow_slash': dict(name='Shadow Slash', cd=6, color=(215, 190, 255), icon='swipe',
                          desc='Swipe your blades at every monster around you. '
                               'Your shadow swipes too, and SLOWS what it hits.'),
+    # --- Arcane Explorer
+    'essence_wave': dict(name='Essence Wave', cd=6, color=(255, 214, 90), icon='crescent',
+                         desc='A golden crescent that flies through monsters and MARKS them. '
+                              'Hit a marked monster again to burst the mark.'),
+    'arcane_shift': dict(name='Arcane Shift', cd=9, color=(120, 210, 255), icon='blink',
+                         desc='Blink forward the way you face. Blasts monsters where you land '
+                              'and fires a bolt at the nearest one.'),
+    'trueshot': dict(name='Trueshot Barrage', cd=24, color=(255, 190, 70), icon='barrage',
+                     desc='A HUGE crescent that flies through walls across the whole map. '
+                          'Each monster after the first takes a bit less.'),
 }

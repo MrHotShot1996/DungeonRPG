@@ -263,6 +263,11 @@ class Sprites:
         elif d == 'right':
             pygame.draw.rect(s, face, (19, 9 if head == 'hood' else 10, 8, 8), border_radius=2)
             s.fill(eye, (23, 12, 2, 3))
+        if head == 'hair':                                 # messy hair: a few spikes on top
+            for hx, hy in ((12, 3), (17, 0), (23, 0), (28, 4)):
+                pygame.draw.polygon(s, pal['helm'], [(hx - 4, 7), (hx, hy), (hx + 4, 7)])
+            if d == 'down':
+                pygame.draw.rect(s, pal['helm'], (11, 6, 18, 4), border_radius=2)
         if head == 'hat':
             pygame.draw.polygon(s, pal['helm'], [(10, 9), (30, 9), (24, -1)])
             pygame.draw.rect(s, pal['trim'], (8, 8, 24, 3), border_radius=1)
@@ -306,6 +311,13 @@ class Sprites:
             pygame.draw.circle(s, shade(orb, 0.55), (ox, oy), 5)
             pygame.draw.circle(s, orb, (ox, oy), 4)
             s.fill((255, 200, 210), (ox - 2, oy - 2, 2, 2))
+        elif w == 'gauntlet':                             # a golden gauntlet with a glowing gem
+            gx, gy = (31, 25) if vertical else (31, 21)
+            pygame.draw.rect(s, (150, 112, 40), (gx - 4, gy - 4, 9, 9), border_radius=2)
+            pygame.draw.rect(s, (222, 182, 76), (gx - 3, gy - 3, 7, 7), border_radius=2)
+            pygame.draw.circle(s, (*orb, 110), (gx + 1, gy), 5)
+            pygame.draw.circle(s, orb, (gx + 1, gy), 2)
+            s.fill((255, 255, 240), (gx, gy - 1, 1, 1))
         elif w == 'bow':
             pygame.draw.arc(s, (140, 92, 48), pygame.Rect(26, 8, 14, 26), -1.25, 1.25, 3)
             pygame.draw.line(s, (235, 235, 225), (33, 9), (33, 33), 1)
@@ -952,6 +964,23 @@ def make_icon(icon, color, size=56):
             P.circle(s, w, (cx + L(dx), cy + L(dy)), L(rr), L(1))
         P.circle(s, c, (cx, cy - L(12)), L(5))
         P.polygon(s, c, [(cx - L(4), cy - L(14)), (cx, cy - r - L(6)), (cx + L(4), cy - L(14))])
+    elif icon == 'crescent':                            # a golden crescent flying right
+        for k, (rr, wd, col) in enumerate(((r, L(7), c), (r - L(5), L(3), w))):
+            P.arc(s, col, (cx - rr - L(8), cy - rr, 2 * rr, 2 * rr), -1.15, 1.15, wd)
+        P.circle(s, w, (cx - L(14), cy), L(3))
+    elif icon == 'blink':                               # a figure's outline, a dotted path, and a flash
+        for k in range(4):
+            P.circle(s, c, (cx - r + L(4) + k * L(9), cy + L(6) - k * L(3)), L(3))
+        P.circle(s, w, (cx + r - L(10), cy - L(6)), L(10), L(3))
+        for a in range(0, 360, 45):
+            ra = math.radians(a)
+            P.line(s, c, (cx + r - L(10) + math.cos(ra) * L(13), cy - L(6) + math.sin(ra) * L(13)),
+                   (cx + r - L(10) + math.cos(ra) * L(19), cy - L(6) + math.sin(ra) * L(19)), L(2))
+    elif icon == 'barrage':                             # a HUGE crescent with speed lines
+        P.arc(s, c, (cx - r - L(2), cy - r, 2 * r, 2 * r), -1.3, 1.3, L(11))
+        P.arc(s, w, (cx - r + L(3), cy - r + L(5), 2 * r - L(10), 2 * r - L(10)), -1.1, 1.1, L(4))
+        for k in (-1, 0, 1):
+            P.line(s, c, (cx - r, cy + k * L(12)), (cx - r + L(14), cy + k * L(12)), L(3))
     elif icon == 'shuriken':                            # a 4-point throwing star
         pts = []
         for i in range(8):
