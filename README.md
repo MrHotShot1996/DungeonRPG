@@ -34,6 +34,16 @@ Every 5th floor has a **mini-boss**, every 10th floor has a **major boss**. You 
 
 Each floor has its own look (frozen catacombs, drowned temple, fungal depths, blood cathedral...), and monsters get tougher the deeper you go.
 
+## Ability levels
+Every ability starts at rank 1 and can go up to **rank 5**. You get an **ability point** at hero level 4
+and then every 3 levels (4, 7, 10, 13...). The game pauses and you choose which ability to upgrade:
+use the arrows and Enter, press the ability's key (1, 2 or 3), or click it.
+Each rank adds **+22% damage** and makes that ability's cooldown **10% shorter** (rank 5 = +88% damage and a
+40% shorter cooldown). Allies you summon with an ability get stronger with its rank too. Shield Wall and
+Living Shadow deal no damage, so ranking them up only shortens their cooldown.
+You can max out all three abilities around level 37. The numbers are in settings.py (RANK_DAMAGE, RANK_COOLDOWN,
+SKILL_POINT_FROM, SKILL_POINT_EVERY).
+
 ## The Shop: items (like League of Legends)
 Every time you take the stairs to a new floor, the Shop opens. You can also open it from the Pause menu.
 You carry up to **4 items** (one of each kind), and they make your hero stronger in 5 ways:

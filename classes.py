@@ -4,6 +4,7 @@ Want a new class? Copy one of the entries below and change the numbers!
 growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."""
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
+NO_DAMAGE = ('shield_wall', 'living_shadow')   # ranking these up only shortens their cooldown
 CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja']
 
 CLASSES = {

@@ -13,7 +13,7 @@ from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, Flo
 from sprites import Sprites, make_icon, ui_icon, item_icon, shade, add
 import items as IT
 from sounds import Audio, MUSIC_TRACKS
-from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS
+from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS, NO_DAMAGE
 from biomes import biome, floor_name
 from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon)
 
@@ -112,6 +112,8 @@ class Game:
         self.shop_sel = 0                     # which thing is highlighted on the Shop screen
         self.shop_sell = None                 # the slot you pressed 'sell' on once (press again to really sell)
         self.pending_thorns = []              # monsters that Bramble Heart will hurt back this frame
+        self.casting = None                   # the ability being cast right now (for its rank)
+        self.skill_sel = 0                    # which card is highlighted on the 'ability point' screen
         self.overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.glow_layer = pygame.Surface((WIDTH // 4, HEIGHT // 4))
         self.glow_big = pygame.Surface((WIDTH, HEIGHT))          # the glow layer blown up (made once, reused every frame)
@@ -844,10 +846,10 @@ class Game:
         p.dmg += gdmg
         p.crit = min(0.6, p.crit + 0.003)
         lines = [f"+{ghp} HP", f"+{gdmg} DMG"]
-        if p.level % 5 == 0:
-            p.cd_mult = max(0.5, p.cd_mult * 0.92)
-            p.ap += 0.1
-            lines.append("Abilities stronger!")
+        if (p.level >= SKILL_POINT_FROM and (p.level - SKILL_POINT_FROM) % SKILL_POINT_EVERY == 0
+                and sum(p.ranks) + p.skill_pts < 3 * ABILITY_MAX_RANK):
+            p.skill_pts += 1                                  # an ability point! (spent on the 'skill' screen)
+            lines.append("Ability point!")
         p.hp = min(p.max_hp, p.hp + int(p.max_hp * LEVELUP_HEAL))
         self.audio.play('levelup2')
         self.rumble(0.5, 350)
@@ -891,6 +893,8 @@ class Game:
             self.minions.remove(old)
             self.burst(old.x, old.y, (180, 255, 200), 8, 90, glow=True)
         m = Minion(kind, x, y, p.level, life, group)
+        if self.casting:                                    # summoned by an ability: its rank makes them stronger
+            m.mult *= self.rank_damage(self.rank_of(self.casting))
         if self.dungeon.hits_wall(m.rect):
             m.x, m.y = p.x, p.y
         self.minions.append(m)
@@ -931,8 +935,16 @@ class Game:
 
     # ------------------------------------------------------------ ABILITIES
     def use_ability(self, slot):
+        """Press ability `slot`. While it runs, self.casting names the ability, so power() can add its rank."""
+        name = CLASSES[self.player.cls]['abilities'][slot]
+        self.casting = name
+        try:
+            self._use_ability(slot, name)
+        finally:
+            self.casting = None
+
+    def _use_ability(self, slot, name):
         p = self.player
-        name = CLASSES[p.cls]['abilities'][slot]
         ab = ABILITIES[name]
         if p.level < UNLOCK_LEVELS[slot]:
             self.float_text(p.x, p.y - 34, f"Unlocks at level {UNLOCK_LEVELS[slot]}", (210, 210, 210))
@@ -958,7 +970,7 @@ class Game:
             return
         if getattr(self, 'ab_' + name)() is False:
             return
-        cd = ab['cd'] * p.cd_mult * (1 - p.istat['cdr'] / 100)      # (cooldown reduction from items)
+        cd = self.ability_cd_for(slot)                              # (its rank, and cooldown reduction from items)
         p.ability_cd[slot] = p.ability_max[slot] = cd
         if 'spellblade' in p.ipow:                                  # Arcane Edge: the next basic attack is stronger
             p.buffs['spellblade'] = IT.MYTHIC_SPELLBLADE_TIME
@@ -968,9 +980,47 @@ class Game:
         p = self.player
         return p.buffs.get('sky_mark', 0) > 0 and p.sky_mark_enemy in self.enemies
 
-    def power(self, mult):
+    # ------------------------------------------------------------ ability ranks
+    def rank_of(self, name):
         p = self.player
-        return p.dmg * mult * p.ap * (1 + p.istat['ap'] / 100) * (BLADE_DMG if self.blade_on() else 1.0)
+        abs_ = CLASSES[p.cls]['abilities']
+        return p.ranks[abs_.index(name)] if name in abs_ else 1
+
+    def rank_damage(self, rank):
+        return 1 + RANK_DAMAGE * (rank - 1)
+
+    def rank_cooldown(self, rank):
+        return 1 - RANK_COOLDOWN * (rank - 1)
+
+    def ability_cd_for(self, slot):
+        """An ability's full cooldown: its rank, then cooldown reduction from items."""
+        p = self.player
+        ab = ABILITIES[CLASSES[p.cls]['abilities'][slot]]
+        return ab['cd'] * p.cd_mult * self.rank_cooldown(p.ranks[slot]) * (1 - p.istat['cdr'] / 100)
+
+    def rank_up(self, slot):
+        """Spend an ability point on `slot`. Returns True if it worked."""
+        p = self.player
+        if p.skill_pts <= 0 or p.ranks[slot] >= ABILITY_MAX_RANK or p.level < UNLOCK_LEVELS[slot]:
+            self.audio.play('deflect')
+            return False
+        p.skill_pts -= 1
+        p.ranks[slot] += 1
+        if p.ability_cd[slot] > 0:                          # a running cooldown shrinks to match
+            old = p.ability_max[slot]
+            p.ability_max[slot] = self.ability_cd_for(slot)
+            p.ability_cd[slot] = min(p.ability_cd[slot], p.ability_cd[slot] * p.ability_max[slot] / max(0.01, old))
+        self.audio.play('unlock')
+        name = ABILITIES[CLASSES[p.cls]['abilities'][slot]]['name']
+        self.toast(f"{name} is now rank {p.ranks[slot]}!", (255, 225, 120))
+        return True
+
+    def power(self, mult, ab=None):
+        """Ability damage. `ab` names the ability (it defaults to the one being cast right now), so its rank counts."""
+        p = self.player
+        name = ab or self.casting
+        rank = self.rank_damage(self.rank_of(name)) if name else 1.0
+        return p.dmg * mult * p.ap * rank * (1 + p.istat['ap'] / 100) * (BLADE_DMG if self.blade_on() else 1.0)
 
     def blade_on(self):
         """True while the Swordsman's Greatblade is extended (more damage, longer reach)."""
@@ -1055,7 +1105,7 @@ class Game:
         spots = self.flower_spots()
         if not spots:
             return
-        dmg = self.power(0.45)
+        dmg = self.power(0.45, 'flower_ring')
         for e in self.enemies[:]:
             if e.petal_cd > 0:
                 continue
@@ -1212,7 +1262,7 @@ class Game:
         self.rumble(0.7, 220)
         self.shockwave(e.x, e.y, 60, (255, 235, 150))
         self.burst(e.x, e.y, (255, 235, 150), 20, 220, glow=True)
-        self.damage_enemy(e, self.power(2.2), crit=True, origin=(p.x, p.y))
+        self.damage_enemy(e, self.power(2.2, 'sky_strike'), crit=True, origin=(p.x, p.y))
         # reward for landing the orb AND the jump: the rest of Sky Strike's cooldown is cut down
         slot = CLASSES[p.cls]['abilities'].index('sky_strike')
         if p.ability_cd[slot] > 0:
@@ -1270,7 +1320,7 @@ class Game:
             p.move(d.x * 9, d.y * 9, self.dungeon)
         rng = SLASH_RANGE * ext * (1.25 if last else 1.0)
         half = SLASH_ARC + (15 if last else 0)
-        dmg = self.power(1.9 if last else 1.2)
+        dmg = self.power(1.9 if last else 1.2, 'triple_slash')
         col = (190, 245, 255) if self.blade_on() else (235, 240, 255)
         p.swing = 0.16
         p.invuln = max(p.invuln, 0.12)
@@ -1341,7 +1391,7 @@ class Game:
         self.rumble(0.7, 220)
         for a in (-16, 0, 16):
             d = base.rotate(a)
-            self.bolts.append(Bolt(p.x + d.x * 20, p.y + d.y * 20, d.x * 520, d.y * 520, self.power(1.6),
+            self.bolts.append(Bolt(p.x + d.x * 20, p.y + d.y * 20, d.x * 520, d.y * 520, self.power(1.6, 'greatblade'),
                                    (150, 235, 255), 14, 0.75, pierce=True, kind='wave'))
         self.sweeps.append([p.x, p.y, math.atan2(base.y, base.x), 70, math.radians(60), 0.22, 0.22, (190, 245, 255)])
         self.burst(p.x + base.x * 24, p.y + base.y * 24, (190, 245, 255), 16, 200, glow=True)
@@ -1557,7 +1607,7 @@ class Game:
             p.pool_tick -= dt
             if p.pool_tick <= 0:
                 p.pool_tick = POOL_TICK
-                self.aoe(p.x, p.y, POOL_RADIUS, self.power(0.7), knock=0, slow=0.8, color=(200, 30, 55), ring=False)
+                self.aoe(p.x, p.y, POOL_RADIUS, self.power(0.7, 'blood_pool'), knock=0, slow=0.8, color=(200, 30, 55), ring=False)
             if random.random() < 0.5 * self.fx:
                 a, r = random.random() * 6.283, random.random() * POOL_RADIUS * 0.85
                 self.particles.append(Particle(p.x + math.cos(a) * r, p.y + math.sin(a) * r, 0, -30, 0.45,
@@ -1575,7 +1625,7 @@ class Game:
             e.curse_t -= dt
             if e.curse_t > 0:
                 continue
-            dmg = int(self.power(1.5) + e.curse_dmg * CURSE_BURST)
+            dmg = int(self.power(1.5, 'blood_curse') + e.curse_dmg * CURSE_BURST)
             e.curse_t, e.curse_dmg = 0.0, 0.0
             total += dmg
             self.shockwave(e.x, e.y, 55, (235, 40, 70))
@@ -1626,7 +1676,7 @@ class Game:
                         f['hit'].add(id(o))
                         if o.kind not in BOSS_KINDS:
                             o.stun_t = max(o.stun_t, 0.5)
-                        self.damage_enemy(o, self.power(2.0), crit=False, origin=(g.x - d.x * 30, g.y - d.y * 30), push=420)
+                        self.damage_enemy(o, self.power(2.0, 'dragons_kick'), crit=False, origin=(g.x - d.x * 30, g.y - d.y * 30), push=420)
                         self.burst(o.x, o.y, (255, 150, 60), 14, 200, glow=True)
                         self.shockwave(o.x, o.y, 45, (255, 170, 90))
                         self.hitstop = max(self.hitstop, 0.05)
@@ -1645,9 +1695,9 @@ class Game:
                     self.audio.play('slam')
                     self.shake = max(self.shake, 0.5)
                     self.burst(g.x, g.y, (200, 170, 130), 16, 220)
-                    self.aoe(g.x, g.y, 85, self.power(1.2), knock=300, color=(255, 170, 90), exclude=(e,))
+                    self.aoe(g.x, g.y, 85, self.power(1.2, 'dragons_kick'), knock=300, color=(255, 170, 90), exclude=(e,))
                     if alive and e in self.enemies:
-                        self.damage_enemy(e, self.power(1.4), crit=False, knock=False)
+                        self.damage_enemy(e, self.power(1.4, 'dragons_kick'), crit=False, knock=False)
                 if alive and e in self.enemies:
                     e.kx = e.ky = 0.0
 
@@ -1743,6 +1793,8 @@ class Game:
             t[2] -= dt
             if t[2] <= 0:
                 self.toasts.remove(t)
+        if self.state == 'playing' and self.player and self.player.skill_pts > 0 and self.player.hp > 0:
+            self.open_skill()                           # an ability point to spend: pause and choose
         if self.state == 'playing':
             if self.hitstop > 0:                        # tiny freeze on big hits (feels crunchy!)
                 self.hitstop -= dt
@@ -1831,6 +1883,105 @@ class Game:
 
     def resume(self):
         self.state = 'playing'
+
+    # ------------------------------------------------------------ choosing an ability to rank up
+    def skill_choices(self):
+        p = self.player
+        return [i for i in range(3) if p.ranks[i] < ABILITY_MAX_RANK and p.level >= UNLOCK_LEVELS[i]]
+
+    def open_skill(self):
+        p = self.player
+        ok = self.skill_choices()
+        if not ok:                                      # (everything is maxed: nothing to spend it on)
+            p.skill_pts = 0
+            self.state = 'playing'
+            return
+        if self.state != 'skill':
+            self.audio.play('levelup')
+        self.state = 'skill'
+        if self.skill_sel not in ok:
+            self.skill_sel = ok[0]
+
+    def skill_pick(self, slot):
+        self.rank_up(slot)
+        if self.player.skill_pts > 0:
+            self.open_skill()                           # more points to spend (or everything is maxed)
+        else:
+            self.state = 'playing'
+
+    def skill_input(self):
+        inp = self.input
+        if inp.pressed('pause'):
+            self.state = 'paused'
+            self.menu_sel = 0
+            return
+        ok = self.skill_choices()
+        for name, d in (('left', -1), ('right', 1)):
+            if inp.nav(name) and ok:
+                i = self.skill_sel
+                for _ in range(3):
+                    i = (i + d) % 3
+                    if i in ok:
+                        break
+                self.skill_sel = i
+                self.audio.play('select')
+        for i in range(3):
+            if inp.pressed(f'ability{i + 1}'):
+                self.skill_sel = i
+                self.skill_pick(i)
+                return
+        if inp.nav('confirm'):
+            self.skill_pick(self.skill_sel)
+
+    def skill_rects(self):
+        return [pygame.Rect(WIDTH // 2 - 465 + i * 320, 200, 290, 360) for i in range(3)]
+
+    def draw_skill(self):
+        p, scr = self.player, self.screen
+        self.dim((10, 6, 24), 150)
+        self.text("ABILITY POINT!", 64, (255, 222, 90), (WIDTH // 2, 112), center=True, outline=True)
+        more = f"   ({p.skill_pts} points to spend)" if p.skill_pts > 1 else ""
+        self.text("Choose an ability to make stronger" + more, 28, (235, 230, 215), (WIDTH // 2, 166), center=True)
+        names = CLASSES[p.cls]['abilities']
+        for i, r in enumerate(self.skill_rects()):
+            name = names[i]
+            ab = ABILITIES[name]
+            rank = p.ranks[i]
+            locked = p.level < UNLOCK_LEVELS[i]
+            maxed = rank >= ABILITY_MAX_RANK
+            sel = i == self.skill_sel and not (locked or maxed)
+            self._hits.append((r, 'skill', i))
+            self.panel(r, alpha=240 if sel else 205, border=ab['color'] if sel else (110, 100, 130), radius=14,
+                       glow=ab['color'] if sel else None)
+            icon = self.icons[name]
+            scr.blit(icon, (r.centerx - icon.get_width() // 2, r.y + 18))
+            self.text(ab['name'], 28, (255, 255, 255) if sel else (215, 215, 230), (r.centerx, r.y + 104), center=True, outline=sel)
+            for k in range(ABILITY_MAX_RANK):           # rank pips
+                cx = r.centerx + (k - (ABILITY_MAX_RANK - 1) / 2) * 30
+                col = ab['color'] if k < rank else ((255, 240, 160) if (k == rank and sel) else (60, 56, 74))
+                pygame.draw.circle(scr, col, (int(cx), r.y + 140), 10)
+                pygame.draw.circle(scr, (20, 16, 28), (int(cx), r.y + 140), 10, 2)
+            y = r.y + 176
+            if locked:
+                self.text(f"Unlocks at level {UNLOCK_LEVELS[i]}", 22, (170, 170, 190), (r.centerx, y + 40), center=True)
+            elif maxed:
+                self.text("MAX RANK", 30, (255, 214, 90), (r.centerx, y + 40), center=True, outline=True)
+            else:
+                self.text(f"Rank {rank}  ->  {rank + 1}", 24, (255, 240, 200), (r.centerx, y), center=True)
+                y += 40
+                if name not in NO_DAMAGE:
+                    a, b = self.rank_damage(rank), self.rank_damage(rank + 1)
+                    self.text(f"Damage  {int(round(a * 100))}%  ->  {int(round(b * 100))}%", 22, (255, 170, 120), (r.centerx, y), center=True)
+                    y += 32
+                c0 = ab['cd'] * self.rank_cooldown(rank)
+                c1 = ab['cd'] * self.rank_cooldown(rank + 1)
+                self.text(f"Cooldown  {c0:.1f}s  ->  {c1:.1f}s", 22, (130, 220, 235), (r.centerx, y), center=True)
+                if name in NO_DAMAGE:
+                    self.text("(no damage - shorter cooldown only)", 18, (170, 170, 190), (r.centerx, y + 32), center=True)
+            badge = self.badge_surface('action', f'ability{i + 1}', 26)
+            scr.blit(badge, (r.centerx - badge.get_width() // 2, r.bottom - 44))
+        self.draw_inline([('nav', 'left'), ('nav', 'right'), " choose     ", ('nav', 'confirm'),
+                          " upgrade     (or press the ability's key)"], WIDTH // 2, 610, 24)
 
     def quit_game(self):
         self.running = False
@@ -2163,6 +2314,8 @@ class Game:
             self.music_input()
         elif st == 'shop':
             self.shop_input()
+        elif st == 'skill':
+            self.skill_input()
         elif st in ('dead', 'victory'):
             if inp.nav('confirm'):
                 self.go_title()
@@ -2190,6 +2343,8 @@ class Game:
                 elif h[1] == 'shop':
                     if self.shop_sel != h[2]:
                         self.shop_sel, self.shop_sell = h[2], None
+                elif h[1] == 'skill':
+                    self.skill_sel = h[2]
                 elif h[1] == 'cell':
                     self.ctl_row, self.ctl_col = h[2], h[3]
                 elif h[1] == 'btn':
@@ -2213,6 +2368,10 @@ class Game:
                 elif h[1] == 'shop':
                     self.shop_sel = h[2]
                     self.shop_activate(h[2])
+                elif h[1] == 'skill':
+                    if h[2] in self.skill_choices():
+                        self.skill_sel = h[2]
+                        self.skill_pick(h[2])
                 elif h[1] == 'tab':
                     self.set_tab(h[2])
                 elif h[1] == 'cell':
@@ -2907,6 +3066,10 @@ class Game:
                 recast = True
             self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'],
                            0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked, count=count)
+            if not locked:                                                      # rank pips under the slot
+                for k in range(ABILITY_MAX_RANK):
+                    px = x0 + i * 76 + 33 + (k - (ABILITY_MAX_RANK - 1) / 2) * 11
+                    pygame.draw.circle(scr, ab['color'] if k < p.ranks[i] else (60, 56, 74), (int(px), y0 + 73), 4)
             if recast and not locked and int(self.t * 6) % 2:
                 pygame.draw.rect(scr, (255, 255, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
             if names[i] == 'greatblade' and self.blade_on():                   # how long the big sword lasts
@@ -2968,8 +3131,9 @@ class Game:
         rows = [("Hero", c['title']), ("Level", str(p.level)), ("Health", f"{p.hp} / {p.max_hp}"),
                 ("Damage", str(p.dmg)), ("Speed", str(int(p.speed))), ("Crit chance", f"{p.crit * 100:.1f}%"),
                 ("Attack bonus (items)", f"+{p.istat['atk']}%"),
-                ("Ability cooldowns", f"{int(p.cd_mult * (1 - p.istat['cdr'] / 100) * 100)}%"),
-                ("Ability power", f"{int(p.ap * (1 + p.istat['ap'] / 100) * 100)}%"),
+                ("Ability ranks", " / ".join(str(r) for r in p.ranks)),
+                ("Cooldown reduction (items)", f"{p.istat['cdr']}%"),
+                ("Ability damage (items)", f"+{p.istat['ap']}%"),
                 ("Life steal", f"{p.istat['ls']}%"), ("Defense", f"{p.istat['df']}%"),
                 ("Heal per kill", f"{p.max_hp * KILL_HEAL_FRAC:.2f} HP"), ("Allies", str(len(self.minions))),
                 ("Monsters beaten", str(p.kills)), ("Gold", str(p.gold)),
@@ -3458,7 +3622,9 @@ class Game:
             mins, secs = divmod(int(self.run_time), 60)
             p = self.player
             c = CLASSES[p.cls]
-            if st == 'paused':
+            if st == 'skill':
+                self.draw_skill()
+            elif st == 'paused':
                 self.dim((0, 0, 20), 175)
                 pause_items = self.pause_items()
                 panel_h = 246 + (len(pause_items) - 1) * 62   # grows to fit however many rows the menu has

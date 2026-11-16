@@ -25,8 +25,17 @@ HURT_INVULN = 0.8             # seconds you can't be hurt again after taking a h
 STAIRS_HEAL = 0.10            # free heal when you take the stairs (part of your max health; was 0.20)
 LEVELUP_HEAL = 0.20           # free heal when you level up (was 0.30)
 XP_MULT = 0.85                # how much XP monsters give (1.0 = how it used to be; lower = level up slower)
-GOLD_MULT = 0.5               # how much gold coins and chests are worth (bigger = richer)
+GOLD_MULT = 0.6               # how much gold coins and chests are worth (bigger = richer)
 GOLD_PER_FLOOR = 0.05         # gold is worth this much more on every floor deeper (0.05 = +5% per floor)
+
+# ---- ABILITY LEVELS: every ability starts at rank 1 and can go up to ABILITY_MAX_RANK.
+# You earn an ability point at hero level SKILL_POINT_FROM and then every SKILL_POINT_EVERY levels,
+# and choose which ability gets it. Each rank above 1 adds RANK_DAMAGE damage and cuts RANK_COOLDOWN off
+# the ability's cooldown (0.22 and 0.10: rank 5 = +88% damage and a 40% shorter cooldown).
+ABILITY_MAX_RANK = 5
+SKILL_POINT_FROM, SKILL_POINT_EVERY = 4, 3
+RANK_DAMAGE = 0.22
+RANK_COOLDOWN = 0.10
 
 # ---- MONSTER BRAINS (see ai.py). Monsters get cleverer the deeper you go: on floor 1 they just walk at you,
 # and by AI_SMARTS_FULL_FLOOR they aim ahead of you, sidestep some of your shots and come at you from the sides.

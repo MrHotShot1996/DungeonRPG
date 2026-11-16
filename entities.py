@@ -64,6 +64,8 @@ class Player(Entity):
         self.ability_cd = [0.0, 0.0, 0.0]
         self.ability_max = [1.0, 1.0, 1.0]
         self.buffs = {}
+        self.ranks = [1, 1, 1]       # each ability's rank (1..ABILITY_MAX_RANK)
+        self.skill_pts = 0           # ability points waiting to be spent
         self.items = []              # the shop items you carry (ids from items.py), at most 4
         self.istat = IT.total_stats(self.items)      # ...their stats added up, in percent
         self.ipow = set()            # ...and the mythic powers they give
