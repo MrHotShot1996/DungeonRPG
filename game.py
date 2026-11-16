@@ -114,6 +114,7 @@ class Game:
         self.pending_thorns = []              # monsters that Bramble Heart will hurt back this frame
         self.casting = None                   # the ability being cast right now (for its rank)
         self.skill_sel = 0                    # which card is highlighted on the 'ability point' screen
+        self.skill_lock = 0.0                 # seconds left before that screen accepts any button
         self.overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.glow_layer = pygame.Surface((WIDTH // 4, HEIGHT // 4))
         self.glow_big = pygame.Surface((WIDTH, HEIGHT))          # the glow layer blown up (made once, reused every frame)
@@ -1783,6 +1784,8 @@ class Game:
     def update(self, dt):
         self.t += dt
         self.fx = min(3.0, dt * 60)
+        if self.state == 'skill':
+            self.skill_lock = max(0.0, self.skill_lock - dt)
         self.audio.update()
         self.fade = max(0.0, self.fade - dt * 1.5)
         self.banner_t = max(0.0, self.banner_t - dt)
@@ -1898,19 +1901,25 @@ class Game:
             return
         if self.state != 'skill':
             self.audio.play('levelup')
+            self.skill_lock = SKILL_LOCK                # ignore buttons for a moment (you were probably attacking)
         self.state = 'skill'
         if self.skill_sel not in ok:
             self.skill_sel = ok[0]
 
     def skill_pick(self, slot):
+        if self.skill_lock > 0:
+            return
         self.rank_up(slot)
         if self.player.skill_pts > 0:
+            self.skill_lock = SKILL_LOCK_NEXT
             self.open_skill()                           # more points to spend (or everything is maxed)
         else:
             self.state = 'playing'
 
     def skill_input(self):
         inp = self.input
+        if self.skill_lock > 0:                         # still locked: every button is ignored
+            return
         if inp.pressed('pause'):
             self.state = 'paused'
             self.menu_sel = 0
@@ -1941,7 +1950,9 @@ class Game:
         self.dim((10, 6, 24), 150)
         self.text("ABILITY POINT!", 64, (255, 222, 90), (WIDTH // 2, 112), center=True, outline=True)
         more = f"   ({p.skill_pts} points to spend)" if p.skill_pts > 1 else ""
-        self.text("Choose an ability to make stronger" + more, 28, (235, 230, 215), (WIDTH // 2, 166), center=True)
+        locked_now = self.skill_lock > 0
+        self.text("Get ready..." if locked_now else "Choose an ability to make stronger" + more, 28,
+                  (200, 195, 215) if locked_now else (235, 230, 215), (WIDTH // 2, 166), center=True)
         names = CLASSES[p.cls]['abilities']
         for i, r in enumerate(self.skill_rects()):
             name = names[i]
@@ -1951,7 +1962,8 @@ class Game:
             maxed = rank >= ABILITY_MAX_RANK
             sel = i == self.skill_sel and not (locked or maxed)
             self._hits.append((r, 'skill', i))
-            self.panel(r, alpha=240 if sel else 205, border=ab['color'] if sel else (110, 100, 130), radius=14,
+            sel = sel and not locked_now
+            self.panel(r, alpha=252, border=ab['color'] if sel else (110, 100, 130), radius=14,
                        glow=ab['color'] if sel else None)
             icon = self.icons[name]
             scr.blit(icon, (r.centerx - icon.get_width() // 2, r.y + 18))
@@ -1980,8 +1992,17 @@ class Game:
                     self.text("(no damage - shorter cooldown only)", 18, (170, 170, 190), (r.centerx, y + 32), center=True)
             badge = self.badge_surface('action', f'ability{i + 1}', 26)
             scr.blit(badge, (r.centerx - badge.get_width() // 2, r.bottom - 44))
-        self.draw_inline([('nav', 'left'), ('nav', 'right'), " choose     ", ('nav', 'confirm'),
-                          " upgrade     (or press the ability's key)"], WIDTH // 2, 610, 24)
+        if locked_now:                                  # a bar that fills up until you can choose
+            full = SKILL_LOCK if self.skill_lock > SKILL_LOCK_NEXT else SKILL_LOCK_NEXT
+            bar = pygame.Rect(WIDTH // 2 - 160, 578, 320, 14)
+            pygame.draw.rect(scr, (40, 34, 56), bar, border_radius=8)
+            fill = bar.copy()
+            fill.w = int(bar.w * (1 - self.skill_lock / full))
+            pygame.draw.rect(scr, (255, 214, 90), fill, border_radius=8)
+            pygame.draw.rect(scr, (110, 100, 130), bar, 2, border_radius=8)
+        else:
+            self.draw_inline([('nav', 'left'), ('nav', 'right'), " choose     ", ('nav', 'confirm'),
+                              " upgrade     (or press the ability's key)"], WIDTH // 2, 585, 24)
 
     def quit_game(self):
         self.running = False

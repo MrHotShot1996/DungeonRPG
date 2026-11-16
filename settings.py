@@ -36,6 +36,9 @@ ABILITY_MAX_RANK = 5
 SKILL_POINT_FROM, SKILL_POINT_EVERY = 4, 3
 RANK_DAMAGE = 0.22
 RANK_COOLDOWN = 0.10
+SKILL_LOCK = 1.0              # seconds the ability-point screen ignores every button when it opens (so a held
+                              # attack button can't pick something by accident)
+SKILL_LOCK_NEXT = 0.4         # ...and between picks, when you have more than one point to spend
 
 # ---- MONSTER BRAINS (see ai.py). Monsters get cleverer the deeper you go: on floor 1 they just walk at you,
 # and by AI_SMARTS_FULL_FLOOR they aim ahead of you, sidestep some of your shots and come at you from the sides.
