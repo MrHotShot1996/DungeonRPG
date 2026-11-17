@@ -18,11 +18,12 @@ V2 = pygame.Vector2
 
 # ====================================================================== the list of things you can DO
 GAME_ACTIONS = ['move_up', 'move_down', 'move_left', 'move_right', 'attack', 'ability1', 'ability2',
-                'ability3', 'dash', 'interact', 'stats', 'pause', 'mute']
+                'ability3', 'ultimate', 'dash', 'interact', 'stats', 'pause', 'mute']
 
 ACTION_LABELS = {
     'move_up': 'Move Up', 'move_down': 'Move Down', 'move_left': 'Move Left', 'move_right': 'Move Right',
     'attack': 'Attack', 'ability1': 'Ability 1', 'ability2': 'Ability 2', 'ability3': 'Ability 3',
+    'ultimate': 'Ultimate',
     'dash': 'Dash', 'interact': 'Stairs / Interact', 'stats': 'Hero Stats (hold)',
     'pause': 'Pause', 'mute': 'Mute Sound',
 }
@@ -33,14 +34,14 @@ DEFAULT_KB = {
     'move_up': [pygame.K_w, pygame.K_UP], 'move_down': [pygame.K_s, pygame.K_DOWN],
     'move_left': [pygame.K_a, pygame.K_LEFT], 'move_right': [pygame.K_d, pygame.K_RIGHT],
     'attack': [pygame.K_SPACE], 'ability1': [pygame.K_1], 'ability2': [pygame.K_2], 'ability3': [pygame.K_3],
-    'dash': [pygame.K_LSHIFT, pygame.K_RSHIFT], 'interact': [pygame.K_e],
+    'ultimate': [pygame.K_r], 'dash': [pygame.K_LSHIFT, pygame.K_RSHIFT], 'interact': [pygame.K_e],
     'stats': [pygame.K_TAB], 'pause': [pygame.K_ESCAPE, pygame.K_p], 'mute': [pygame.K_m],
 }
 # Controller names follow SDL: a=Cross, b=Circle, x=Square, y=Triangle, lt/rt = L2/R2, ...
 DEFAULT_PAD = {
     'move_up': ['dpup'], 'move_down': ['dpdown'], 'move_left': ['dpleft'], 'move_right': ['dpright'],
     'attack': ['rt', 'x'], 'ability1': ['leftshoulder'], 'ability2': ['rightshoulder'], 'ability3': ['lt'],
-    'dash': ['a'], 'interact': ['y'], 'stats': ['back', 'touchpad'],
+    'ultimate': ['b'], 'dash': ['a'], 'interact': ['y'], 'stats': ['back', 'touchpad'],
     'pause': ['start'], 'mute': [],
 }
 DEFAULT_SETTINGS = {'deadzone': 0.22, 'vibration': True, 'stick_aims': True, 'stick_attack': True, 'aim_assist': True}

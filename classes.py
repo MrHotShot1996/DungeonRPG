@@ -5,6 +5,23 @@ growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
 NO_DAMAGE = ('shield_wall', 'living_shadow')   # ranking these up only shortens their cooldown
+ULT_UNLOCK = 8                     # a hero's ULTIMATE (4th ability, the 'ultimate' key) unlocks at this level
+ULT_MAX_RANK = 3                   # ...and can be ranked up to this
+
+
+def slot_names(cls):
+    """A hero's ability names, in key order: abilities 1-3, then the ultimate if the hero has one."""
+    c = CLASSES[cls]
+    return c['abilities'] + ([c['ult']] if c.get('ult') else [])
+
+
+def unlock_level(slot):
+    return UNLOCK_LEVELS[slot] if slot < 3 else ULT_UNLOCK
+
+
+def slot_key(slot):
+    """The input action that uses ability `slot`."""
+    return f'ability{slot + 1}' if slot < 3 else 'ultimate'
 CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer']
 
 CLASSES = {
@@ -76,7 +93,7 @@ CLASSES = {
         palette=dict(armor=(38, 38, 52), trim=(78, 80, 104), legs=(28, 28, 40), helm=(32, 32, 46),
                      plume=None, head='hood', weapon='dagger', face='dark', orb=(255, 70, 80),
                      collar=(190, 40, 55)),
-        abilities=['shadow_shuriken', 'living_shadow', 'shadow_slash']),
+        abilities=['shadow_shuriken', 'living_shadow', 'shadow_slash'], ult='death_mark'),
     'explorer': dict(
         name='Arcane Explorer', short='Explorer', title='The Arcane Explorer', color=(255, 214, 90),
         blurb='A daring treasure hunter whose golden gauntlet shoots arcane bolts.',
@@ -152,6 +169,9 @@ ABILITIES = {
     'shadow_slash': dict(name='Shadow Slash', cd=6, color=(215, 190, 255), icon='swipe',
                          desc='Swipe your blades at every monster around you. '
                               'Your shadow swipes too, and SLOWS what it hits.'),
+    'death_mark': dict(name='Death Mark', cd=32, color=(230, 60, 80), icon='deathmark',
+                       desc='ULTIMATE: Vanish and strike the monster you aim at, leaving a shadow behind. '
+                            'It is MARKED: damage you deal is stored, then it blows up. Press again to swap with the shadow.'),
     # --- Arcane Explorer
     'essence_wave': dict(name='Essence Wave', cd=6, color=(255, 214, 90), icon='crescent',
                          desc='A golden crescent that flies through monsters and MARKS them. '

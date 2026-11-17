@@ -13,7 +13,8 @@ from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, Flo
 from sprites import Sprites, make_icon, ui_icon, item_icon, shade, add
 import items as IT
 from sounds import Audio, MUSIC_TRACKS
-from classes import CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS, NO_DAMAGE
+from classes import (CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS, NO_DAMAGE, ULT_MAX_RANK, slot_names,
+                     unlock_level, slot_key)
 from biomes import biome, floor_name
 from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon)
 
@@ -52,6 +53,11 @@ SHURIKEN_FALLOFF = 0.5                  # ...every hit after the first does this
 SHADOW_TIME, SHADOW_THROW = 5.0, 170    # Living Shadow: seconds it lasts, and how far in front of you it lands
 SHADOW_SPEED = 1300                     # ...and how fast it flies there (pixels per second)
 SWIPE_RADIUS, SWIPE_SLOW = 105, 1.5     # Shadow Slash: how wide, and seconds the SHADOW's swipe slows monsters
+DEATH_RANGE = 420                       # Death Mark: how far away a monster can be
+DEATH_INVULN = 0.75                     # ...seconds you can't be hurt after striking
+DEATH_TIME = 3.0                        # ...seconds until the mark blows up
+DEATH_STORE = 0.5                       # ...the blast adds this much of the damage you dealt while it was marked
+DEATH_SHADOW_TIME = 6.0                 # ...seconds the shadow you leave behind lasts (it copies abilities 1 and 3)
 FREEZE_TIME = 2.5                                  # Ghala's Frozen Heart: seconds a monster stays frozen
 FLOWER_TIME, FLOWER_RADIUS, FLOWER_COUNT = 6.0, 76, 6  # Ghala's Flower Ring: how long, how wide, how many
 
@@ -184,6 +190,7 @@ class Game:
         self.drops = []                                   # Vampire Lord: blood flying back to you
         self.splashes = []                                # ...and the blood thrown on the floor by Blood Curse
         self.shadow = None                                # Shadow Ninja: the Living Shadow (a dict) while it is out
+        self.ult_shadow = None                            # ...and the shadow Death Mark leaves behind
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
 
     # ------------------------------------------------------------ pretty-picture helpers
@@ -622,7 +629,7 @@ class Game:
 
     def refund_cooldowns(self, secs):
         p = self.player
-        for i in range(3):
+        for i in range(len(p.ranks)):
             if p.ability_cd[i] > 0:
                 p.ability_cd[i] = max(0.0, p.ability_cd[i] - secs)
 
@@ -684,6 +691,8 @@ class Game:
         if cursed:
             e.curse_dmg += dmg                       # ...and remembers it, for a bigger burst at the end
         dealt = min(dmg, max(0, e.hp))               # (overkill doesn't count for life steal)
+        if src != 'deathmark' and getattr(e, 'dm_until', 0) > self.run_time:
+            e.dm_store += dealt                      # Death Mark: remembered for the blast
         e.hp -= dmg
         e.awake = True
         e.lost_t = 0.0                                # (getting hit reminds it where you are)
@@ -850,7 +859,7 @@ class Game:
         p.crit = min(0.6, p.crit + 0.003)
         lines = [f"+{ghp} HP", f"+{gdmg} DMG"]
         if (p.level >= SKILL_POINT_FROM and (p.level - SKILL_POINT_FROM) % SKILL_POINT_EVERY == 0
-                and sum(p.ranks) + p.skill_pts < 3 * ABILITY_MAX_RANK):
+                and sum(p.ranks) + p.skill_pts < sum(self.max_rank(i) for i in range(len(p.ranks)))):
             p.skill_pts += 1                                  # an ability point! (spent on the 'skill' screen)
             lines.append("Ability point!")
         p.hp = min(p.max_hp, p.hp + int(p.max_hp * LEVELUP_HEAL))
@@ -865,6 +874,11 @@ class Game:
             slot = UNLOCK_LEVELS.index(p.level)
             name = ABILITIES[c['abilities'][slot]]['name']
             self.show_banner(f"New ability: {name}", f"Press {slot + 1} to use it")
+            self.audio.play('unlock')
+        names = slot_names(p.cls)
+        if len(names) > 3 and p.level == unlock_level(3):     # the ultimate unlocks
+            key_lab = (self.input.labels('ultimate') or ['R'])[0]
+            self.show_banner(f"ULTIMATE: {ABILITIES[names[3]]['name']}", f"Press {key_lab} to use it")
             self.audio.play('unlock')
 
     def on_player_death(self):
@@ -939,7 +953,10 @@ class Game:
     # ------------------------------------------------------------ ABILITIES
     def use_ability(self, slot):
         """Press ability `slot`. While it runs, self.casting names the ability, so power() can add its rank."""
-        name = CLASSES[self.player.cls]['abilities'][slot]
+        names = slot_names(self.player.cls)
+        if slot >= len(names):                          # (no ultimate for this hero)
+            return
+        name = names[slot]
         self.casting = name
         try:
             self._use_ability(slot, name)
@@ -949,8 +966,8 @@ class Game:
     def _use_ability(self, slot, name):
         p = self.player
         ab = ABILITIES[name]
-        if p.level < UNLOCK_LEVELS[slot]:
-            self.float_text(p.x, p.y - 34, f"Unlocks at level {UNLOCK_LEVELS[slot]}", (210, 210, 210))
+        if p.level < unlock_level(slot):
+            self.float_text(p.x, p.y - 34, f"Unlocks at level {unlock_level(slot)}", (210, 210, 210))
             return
         if p.launch_t > 0:                # already flying at the mark
             return
@@ -967,7 +984,10 @@ class Game:
             self.ab_blade_wave()          # second press while the sword is extended: throw blade waves
             return
         if name == 'living_shadow' and self.shadow_swap_ready():
-            self.ab_shadow_swap()         # second press while the shadow is out: swap places with it
+            self.ab_shadow_swap(self.shadow)        # second press while the shadow is out: swap places with it
+            return
+        if name == 'death_mark' and self.ult_swap_ready():
+            self.ab_shadow_swap(self.ult_shadow)    # second press: swap back to the shadow you left behind
             return
         if p.ability_cd[slot] > 0:
             return
@@ -984,9 +1004,12 @@ class Game:
         return p.buffs.get('sky_mark', 0) > 0 and p.sky_mark_enemy in self.enemies
 
     # ------------------------------------------------------------ ability ranks
+    def max_rank(self, slot):
+        return ABILITY_MAX_RANK if slot < 3 else ULT_MAX_RANK
+
     def rank_of(self, name):
         p = self.player
-        abs_ = CLASSES[p.cls]['abilities']
+        abs_ = slot_names(p.cls)
         return p.ranks[abs_.index(name)] if name in abs_ else 1
 
     def rank_damage(self, rank):
@@ -998,13 +1021,14 @@ class Game:
     def ability_cd_for(self, slot):
         """An ability's full cooldown: its rank, then cooldown reduction from items."""
         p = self.player
-        ab = ABILITIES[CLASSES[p.cls]['abilities'][slot]]
+        ab = ABILITIES[slot_names(p.cls)[slot]]
         return ab['cd'] * p.cd_mult * self.rank_cooldown(p.ranks[slot]) * (1 - p.istat['cdr'] / 100)
 
     def rank_up(self, slot):
         """Spend an ability point on `slot`. Returns True if it worked."""
         p = self.player
-        if p.skill_pts <= 0 or p.ranks[slot] >= ABILITY_MAX_RANK or p.level < UNLOCK_LEVELS[slot]:
+        if (slot >= len(p.ranks) or p.skill_pts <= 0 or p.ranks[slot] >= self.max_rank(slot)
+                or p.level < unlock_level(slot)):
             self.audio.play('deflect')
             return False
         p.skill_pts -= 1
@@ -1014,7 +1038,7 @@ class Game:
             p.ability_max[slot] = self.ability_cd_for(slot)
             p.ability_cd[slot] = min(p.ability_cd[slot], p.ability_cd[slot] * p.ability_max[slot] / max(0.01, old))
         self.audio.play('unlock')
-        name = ABILITIES[CLASSES[p.cls]['abilities'][slot]]['name']
+        name = ABILITIES[slot_names(p.cls)[slot]]['name']
         self.toast(f"{name} is now rank {p.ranks[slot]}!", (255, 225, 120))
         return True
 
@@ -1488,6 +1512,18 @@ class Game:
         """True while the shadow is out and we haven't swapped places with it yet."""
         return self.shadow is not None and not self.shadow['swapped']
 
+    def ult_swap_ready(self):
+        return self.ult_shadow is not None and not self.ult_shadow['swapped']
+
+    def shadows(self):
+        """Every shadow that is out right now (the Living Shadow and Death Mark's). They all copy abilities 1 and 3."""
+        return [s for s in (self.shadow, self.ult_shadow) if s is not None]
+
+    def make_shadow(self, x, y, face, t, fly=None, ult=False):
+        p = self.player
+        return dict(e=Entity(x, y, p.w, p.h), d=V2(fly or face), left=float(SHADOW_THROW if fly else 0.0), t=t,
+                    face=V2(face), swapped=False, act=0.0, ult=ult)
+
     def throw_shurikens(self, x, y, base, volley):
         """Three shurikens in a straight line from (x, y): all fly the same way, one just behind the other.
         `volley` is shared by every shuriken of one cast, so a monster only takes the FULL hit once -
@@ -1507,8 +1543,7 @@ class Game:
         self.audio.play('knife')
         volley = set()
         self.throw_shurikens(p.x, p.y, d, volley)
-        sh = self.shadow
-        if sh:
+        for sh in self.shadows():
             sd = V2(d)                                       # the shadow throws the same way you do...
             if target is not None and target in self.enemies and self.dungeon.line_clear(sh['e'].x, sh['e'].y,
                                                                                        target.x, target.y):
@@ -1525,15 +1560,14 @@ class Game:
         p = self.player
         d = self.aim_dir()
         p.face = V2(d)
-        self.shadow = dict(e=Entity(p.x, p.y, p.w, p.h), d=V2(d), left=float(SHADOW_THROW), t=SHADOW_TIME,
-                           face=V2(d), swapped=False, act=0.0)
+        self.shadow = self.make_shadow(p.x, p.y, d, SHADOW_TIME, fly=d)
         self.audio.play('warp')
         self.burst(p.x, p.y, (150, 110, 235), 14, 150, glow=True)
         self.float_text(p.x, p.y - 34, "Shadow!", (190, 160, 255), big=True)
 
-    def ab_shadow_swap(self):
-        """The Living Shadow recast: you and your shadow trade places (once per shadow)."""
-        p, sh = self.player, self.shadow
+    def ab_shadow_swap(self, sh):
+        """Recast: you and a shadow trade places (once per shadow)."""
+        p = self.player
         g = sh['e']
         if self.dungeon.hits_wall(pygame.Rect(int(g.x - p.w / 2), int(g.y - p.h / 2), p.w, p.h)):
             return                                           # (can't happen - the shadow never enters a wall)
@@ -1568,18 +1602,22 @@ class Game:
         self.audio.play('swing')
         self.shake = max(self.shake, 0.2)
         hit = self.swipe_at(p.x, p.y, 0.0, None)
-        sh = self.shadow
-        if sh:
+        for sh in self.shadows():
             sh['act'] = 0.3
-            for e in hit:                                    # in both circles: no second hit, but still slowed
+            for e in hit:                                    # in more than one circle: no second hit, but slowed
                 if e in self.enemies and math.hypot(e.x - sh['e'].x, e.y - sh['e'].y) <= SWIPE_RADIUS + e.w / 2:
                     e.slow_t = max(e.slow_t, SWIPE_SLOW)
-            self.swipe_at(sh['e'].x, sh['e'].y, SWIPE_SLOW, hit)
+            hit = hit + self.swipe_at(sh['e'].x, sh['e'].y, SWIPE_SLOW, hit)
 
     def update_shadow(self, dt):
-        sh = self.shadow
-        if sh is None:
-            return
+        for attr in ('shadow', 'ult_shadow'):
+            sh = getattr(self, attr)
+            if sh is not None and not self.update_one_shadow(sh, dt):
+                setattr(self, attr, None)
+        self.update_death_marks()
+
+    def update_one_shadow(self, sh, dt):
+        """Move and count down one shadow. Returns False once it has melted away."""
         g = sh['e']
         if sh['left'] > 0:                                   # still flying out: small steps, stop at walls
             step = min(sh['left'], SHADOW_SPEED * dt)
@@ -1599,10 +1637,97 @@ class Game:
         sh['t'] -= dt
         if random.random() < 0.35 * self.fx:
             self.particles.append(Particle(g.x + random.uniform(-9, 9), g.y + random.uniform(-4, 10), 0, -34, 0.5,
-                                           (95, 60, 170), 3))
+                                           (150, 40, 70) if sh['ult'] else (95, 60, 170), 3))
         if sh['t'] <= 0:                                     # time is up: it melts away
-            self.shadow = None
             self.burst(g.x, g.y, (120, 80, 200), 14, 120, glow=True)
+            return False
+        return True
+
+    # -- Shadow Ninja's ULTIMATE: Death Mark
+    def death_target(self):
+        """The monster Death Mark goes for: the one you aim at, or else the nearest one you can see (in range)."""
+        p = self.player
+        _, who = self.aim_pick()
+        ok = lambda e: (e in self.enemies and math.hypot(e.x - p.x, e.y - p.y) <= DEATH_RANGE
+                        and self.dungeon.line_clear(p.x, p.y, e.x, e.y))
+        if who is not None and ok(who):
+            return who
+        near = [e for e in self.enemies if ok(e)]
+        return min(near, key=lambda e: math.hypot(e.x - p.x, e.y - p.y)) if near else None
+
+    def death_landing(self, e, sx, sy):
+        """A free spot right BEHIND monster `e` (seen from where you started), or the nearest free spot around it."""
+        p = self.player
+        d = V2(e.x - sx, e.y - sy)
+        d = d.normalize() if d.length_squared() > 1 else V2(1, 0)
+        r = e.w / 2 + p.w / 2 + 6
+        for a in (0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180):
+            v = d.rotate(a)
+            x, y = e.x + v.x * r, e.y + v.y * r
+            if (not self.dungeon.hits_wall(pygame.Rect(int(x - p.w / 2), int(y - p.h / 2), p.w, p.h))
+                    and self.dungeon.line_clear(e.x, e.y, x, y)):
+                return x, y
+        # boxed in: the closest free spot on the way there
+        x, y = sx, sy
+        L = math.hypot(e.x - sx, e.y - sy)
+        steps = int(L // 6)
+        for i in range(1, steps + 1):
+            nx, ny = sx + (e.x - sx) * i / steps, sy + (e.y - sy) * i / steps
+            if self.dungeon.hits_wall(pygame.Rect(int(nx - p.w / 2), int(ny - p.h / 2), p.w, p.h)):
+                break
+            x, y = nx, ny
+        return x, y
+
+    def ab_death_mark(self):
+        """Vanish, leave a shadow where you stood, and strike the target from behind. The target is MARKED."""
+        p = self.player
+        e = self.death_target()
+        if e is None:
+            self.float_text(p.x, p.y - 34, "No target!", (230, 150, 160))
+            self.audio.play('deflect')
+            return False                                  # (no cooldown when there is nobody to strike)
+        sx, sy = p.x, p.y
+        x, y = self.death_landing(e, sx, sy)
+        self.ult_shadow = self.make_shadow(sx, sy, V2(e.x - sx, e.y - sy) or V2(p.face), DEATH_SHADOW_TIME, ult=True)
+        for k in range(6):                                # after-images along the way
+            f = (k + 1) / 7
+            self.trail.append([sx + (x - sx) * f, sy + (y - sy) * f, p.dir_name, 0.22])
+        self.burst(sx, sy, (150, 40, 70), 18, 170, glow=True)
+        p.x, p.y = x, y
+        p.kx = p.ky = 0.0
+        p.dash_t = 0.0
+        p.invuln = max(p.invuln, DEATH_INVULN)
+        v = V2(e.x - p.x, e.y - p.y)
+        if v.length_squared() > 1:
+            p.face = v.normalize()
+        p.swing = 0.18
+        self.audio.play('warp')
+        self.audio.play('hit')
+        self.shake = max(self.shake, 0.3)
+        self.hitstop = max(self.hitstop, 0.06)
+        self.burst(e.x, e.y, (230, 60, 80), 22, 220, glow=True)
+        self.shockwave(e.x, e.y, 50, (230, 60, 80))
+        self.float_text(e.x, e.y - e.h / 2 - 30, "MARKED", (255, 90, 110), big=True)
+        self.damage_enemy(e, self.power(1.5), crit=True, origin=(sx, sy))
+        if e in self.enemies and e.hp > 0:                # the mark goes on AFTER the strike (it isn't stored)
+            e.dm_until, e.dm_store = self.run_time + DEATH_TIME, 0.0
+
+    def update_death_marks(self):
+        for e in self.enemies[:]:
+            if getattr(e, 'dm_until', 0) and self.run_time >= e.dm_until and e in self.enemies:
+                self.death_burst(e)
+
+    def death_burst(self, e):
+        """The mark blows up: a set amount, plus DEATH_STORE of everything you did to it while it was marked."""
+        stored = e.dm_store
+        e.dm_until, e.dm_store = 0, 0.0
+        dmg = self.power(2.0, 'death_mark') + stored * DEATH_STORE
+        self.audio.play('boom')
+        self.shake = max(self.shake, 0.35)
+        self.shockwave(e.x, e.y, 70, (230, 60, 80))
+        self.burst(e.x, e.y, (255, 80, 100), 34, 260, glow=True)
+        self.burst(e.x, e.y, (40, 10, 20), 14, 160)
+        self.damage_enemy(e, dmg, crit=False, origin=(e.x, e.y - 1), src='deathmark')
 
     # -- Arcane Explorer
     def essence_mark(self, e):
@@ -1962,7 +2087,7 @@ class Game:
     # ------------------------------------------------------------ choosing an ability to rank up
     def skill_choices(self):
         p = self.player
-        return [i for i in range(3) if p.ranks[i] < ABILITY_MAX_RANK and p.level >= UNLOCK_LEVELS[i]]
+        return [i for i in range(len(p.ranks)) if p.ranks[i] < self.max_rank(i) and p.level >= unlock_level(i)]
 
     def open_skill(self):
         p = self.player
@@ -1997,17 +2122,18 @@ class Game:
             self.menu_sel = 0
             return
         ok = self.skill_choices()
+        n = len(self.player.ranks)
         for name, d in (('left', -1), ('right', 1)):
             if inp.nav(name) and ok:
                 i = self.skill_sel
-                for _ in range(3):
-                    i = (i + d) % 3
+                for _ in range(n):
+                    i = (i + d) % n
                     if i in ok:
                         break
                 self.skill_sel = i
                 self.audio.play('select')
-        for i in range(3):
-            if inp.pressed(f'ability{i + 1}'):
+        for i in range(n):
+            if inp.pressed(slot_key(i)):
                 self.skill_sel = i
                 self.skill_pick(i)
                 return
@@ -2015,7 +2141,10 @@ class Game:
             self.skill_pick(self.skill_sel)
 
     def skill_rects(self):
-        return [pygame.Rect(WIDTH // 2 - 465 + i * 320, 200, 290, 360) for i in range(3)]
+        n = len(self.player.ranks)
+        w, gap = (290, 30) if n <= 3 else (262, 22)
+        left = WIDTH // 2 - (n * w + (n - 1) * gap) // 2
+        return [pygame.Rect(left + i * (w + gap), 200, w, 360) for i in range(n)]
 
     def draw_skill(self):
         p, scr = self.player, self.screen
@@ -2025,13 +2154,14 @@ class Game:
         locked_now = self.skill_lock > 0
         self.text("Get ready..." if locked_now else "Choose an ability to make stronger" + more, 28,
                   (200, 195, 215) if locked_now else (235, 230, 215), (WIDTH // 2, 166), center=True)
-        names = CLASSES[p.cls]['abilities']
+        names = slot_names(p.cls)
         for i, r in enumerate(self.skill_rects()):
             name = names[i]
             ab = ABILITIES[name]
             rank = p.ranks[i]
-            locked = p.level < UNLOCK_LEVELS[i]
-            maxed = rank >= ABILITY_MAX_RANK
+            locked = p.level < unlock_level(i)
+            top = self.max_rank(i)
+            maxed = rank >= top
             sel = i == self.skill_sel and not (locked or maxed)
             self._hits.append((r, 'skill', i))
             sel = sel and not locked_now
@@ -2040,14 +2170,14 @@ class Game:
             icon = self.icons[name]
             scr.blit(icon, (r.centerx - icon.get_width() // 2, r.y + 18))
             self.text(ab['name'], 28, (255, 255, 255) if sel else (215, 215, 230), (r.centerx, r.y + 104), center=True, outline=sel)
-            for k in range(ABILITY_MAX_RANK):           # rank pips
-                cx = r.centerx + (k - (ABILITY_MAX_RANK - 1) / 2) * 30
+            for k in range(top):                        # rank pips
+                cx = r.centerx + (k - (top - 1) / 2) * 30
                 col = ab['color'] if k < rank else ((255, 240, 160) if (k == rank and sel) else (60, 56, 74))
                 pygame.draw.circle(scr, col, (int(cx), r.y + 140), 10)
                 pygame.draw.circle(scr, (20, 16, 28), (int(cx), r.y + 140), 10, 2)
             y = r.y + 176
             if locked:
-                self.text(f"Unlocks at level {UNLOCK_LEVELS[i]}", 22, (170, 170, 190), (r.centerx, y + 40), center=True)
+                self.text(f"Unlocks at level {unlock_level(i)}", 22, (170, 170, 190), (r.centerx, y + 40), center=True)
             elif maxed:
                 self.text("MAX RANK", 30, (255, 214, 90), (r.centerx, y + 40), center=True, outline=True)
             else:
@@ -2062,7 +2192,7 @@ class Game:
                 self.text(f"Cooldown  {c0:.1f}s  ->  {c1:.1f}s", 22, (130, 220, 235), (r.centerx, y), center=True)
                 if name in NO_DAMAGE:
                     self.text("(no damage - shorter cooldown only)", 18, (170, 170, 190), (r.centerx, y + 32), center=True)
-            badge = self.badge_surface('action', f'ability{i + 1}', 26)
+            badge = self.badge_surface('action', slot_key(i), 26)
             scr.blit(badge, (r.centerx - badge.get_width() // 2, r.bottom - 44))
         if locked_now:                                  # a bar that fills up until you can choose
             full = SKILL_LOCK if self.skill_lock > SKILL_LOCK_NEXT else SKILL_LOCK_NEXT
@@ -2393,8 +2523,8 @@ class Game:
                 return
             if inp.pressed('interact'):
                 self.try_descend()
-            for i in range(3):
-                if inp.pressed(f'ability{i + 1}'):
+            for i in range(len(self.player.ranks)):
+                if inp.pressed(slot_key(i)):
                     self.use_ability(i)
         elif st == 'paused':
             if inp.pressed('pause') or inp.nav('back'):
@@ -2569,6 +2699,16 @@ class Game:
             pygame.draw.circle(scr, (255, 235, 150), (sx, int(top - 14)), 7)
             pygame.draw.circle(scr, (255, 255, 235), (sx, int(top - 14)), 4)
             self.add_glow(sx, int(top - 14), 34, (255, 235, 150), 1.0)
+        dm = getattr(o, 'dm_until', 0) - self.run_time
+        if dm > 0:                                           # Death Mark: a red ring that closes in, and a skull
+            k = max(0.0, min(1.0, dm / DEATH_TIME))
+            rr = int(14 + 14 * k)
+            pygame.draw.circle(scr, (230, 60, 80), (sx, int(o.y - cy)), rr, 3)
+            pygame.draw.circle(scr, (255, 150, 160), (sx, int(o.y - cy)), max(4, rr - 7), 1)
+            self.text("X", 22, (255, 90, 110), (sx, int(top - 30)), center=True, outline=True)
+            if o.dm_store > 0:
+                self.text(str(int(o.dm_store * DEATH_STORE)), 16, (255, 200, 205), (sx, int(top - 46)), center=True, outline=True)
+            self.add_glow(sx, int(o.y - cy), 60, (230, 60, 80), 0.6 + 0.4 * (1 - k))
         left = getattr(o, 'essence_until', 0) - self.run_time
         if left > 0:                                         # Essence Wave's mark: a golden ring that spins
             for k in range(3):
@@ -2709,17 +2849,19 @@ class Game:
         for tr in self.trail:                                                # dash after-images
             img = sp.player[(p.cls, tr[2], 0)]
             self.blit_feet(img, tr[0] - cx, tr[1] - cy + p.h / 2 + 2, sp.foot[('p', p.cls)], int(130 * tr[3] / 0.22))
-        sh = self.shadow
-        if sh and (sh['t'] > 1.0 or int(t * 12) % 2):                        # the Shadow Ninja's Living Shadow
-            g = sh['e']                                                      # (it flickers just before it fades)
+        for sh in self.shadows():                                            # the Shadow Ninja's shadows
+            if not (sh['t'] > 1.0 or int(t * 12) % 2):                       # (they flicker just before they fade)
+                continue
+            g = sh['e']
             f = sh['face']
             dname = ('right' if f.x > 0 else 'left') if abs(f.x) > abs(f.y) else ('down' if f.y > 0 else 'up')
             img = sp.shadow_copy(p.cls, dname)
             bob = int(1.5 * math.sin(t * 5))
             self.blit_feet(img, g.x - cx, g.y - cy + p.h / 2 + 2 + bob, sp.foot[('p', p.cls)], 245 if sh['act'] > 0 else 205)
             self.add_glow(g.x - cx, g.y - cy + 10, 48, (110, 70, 210), 0.3 + 0.08 * math.sin(t * 6))
-            pygame.draw.ellipse(scr, (150, 110, 235), (int(g.x - cx) - 17, int(g.y - cy + p.h / 2) - 5, 34, 14), 2)
-            lights.append((g.x, g.y, 110, (150, 110, 235), 0.35, 0.15))
+            ring = (230, 60, 80) if sh['ult'] else (150, 110, 235)
+            pygame.draw.ellipse(scr, ring, (int(g.x - cx) - 17, int(g.y - cy + p.h / 2) - 5, 34, 14), 2)
+            lights.append((g.x, g.y, 110, ring, 0.35, 0.15))
         for o in things:
             sx, sy = int(o.x - cx), int(o.y - cy)
             if sx < -90 or sx > WIDTH + 90 or sy < -90 or sy > HEIGHT + 90:
@@ -3171,13 +3313,14 @@ class Game:
                 self.bar(bx, 114, 480, 16, e.hp / e.max_hp, *BOSS_BAR[e.kind])
 
         # ---- ability bar (bottom-centre)
-        names = c['abilities']
-        x0 = WIDTH // 2 - 154
+        names = slot_names(p.cls)
+        nslots = len(names)
+        x0 = WIDTH // 2 - 154 - (38 if nslots > 3 else 0)
         y0 = HEIGHT - 92
-        self.panel((x0 - 16, y0 - 12, 340, 92), alpha=190)
-        for i in range(3):
+        self.panel((x0 - 16, y0 - 12, 340 + 76 * (nslots - 3), 92), alpha=190)
+        for i in range(nslots):
             ab = ABILITIES[names[i]]
-            locked = UNLOCK_LEVELS[i] if p.level < UNLOCK_LEVELS[i] else None
+            locked = unlock_level(i) if p.level < unlock_level(i) else None
             count = None
             recast = names[i] == 'sky_strike' and self.sky_recast_ready()      # orb is stuck: press again!
             if names[i] == 'triple_slash' and self.combo_ready():              # swipes left in the combo
@@ -3186,16 +3329,22 @@ class Game:
                 recast = True
             if names[i] == 'living_shadow' and self.shadow_swap_ready():       # press again: swap places!
                 recast = True
+            if names[i] == 'death_mark' and self.ult_swap_ready():
+                recast = True
             self.draw_slot(x0 + i * 76, y0, 66, self.icons[names[i]], ab['color'],
-                           0 if recast else p.ability_cd[i], p.ability_max[i], f'ability{i + 1}', locked, count=count)
+                           0 if recast else p.ability_cd[i], p.ability_max[i], slot_key(i), locked, count=count)
             if not locked:                                                      # rank pips under the slot
-                for k in range(ABILITY_MAX_RANK):
-                    px = x0 + i * 76 + 33 + (k - (ABILITY_MAX_RANK - 1) / 2) * 11
+                top = self.max_rank(i)
+                for k in range(top):
+                    px = x0 + i * 76 + 33 + (k - (top - 1) / 2) * 11
                     pygame.draw.circle(scr, ab['color'] if k < p.ranks[i] else (60, 56, 74), (int(px), y0 + 73), 4)
             if recast and not locked and int(self.t * 6) % 2:
                 pygame.draw.rect(scr, (255, 255, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
             if names[i] == 'greatblade' and self.blade_on():                   # how long the big sword lasts
                 self.text(f"{p.buffs['greatblade']:.0f}s", 20, (190, 245, 255), (x0 + i * 76 + 33, y0 - 12),
+                          center=True, outline=True)
+            if names[i] == 'death_mark' and self.ult_shadow:
+                self.text(f"{max(0.0, self.ult_shadow['t']):.1f}s", 20, (255, 150, 160), (x0 + i * 76 + 33, y0 - 12),
                           center=True, outline=True)
             if names[i] == 'living_shadow' and self.shadow_on():               # how long the shadow stays
                 self.text(f"{max(0.0, self.shadow['t']):.1f}s", 20, (200, 175, 255), (x0 + i * 76 + 33, y0 - 12),
@@ -3203,7 +3352,7 @@ class Game:
             if names[i] == 'blood_pool' and p.buffs.get('pool', 0) > 0:        # how long you stay in the pool
                 self.text(f"{p.buffs['pool']:.1f}s", 20, (255, 150, 165), (x0 + i * 76 + 33, y0 - 12),
                           center=True, outline=True)
-        sx = x0 + 3 * 76 + 14
+        sx = x0 + nslots * 76 + 14
         pygame.draw.line(scr, (110, 96, 70), (sx - 10, y0 + 6), (sx - 10, y0 + 60), 2)
         self.draw_slot(sx, y0, 66, self.ui['dash_big'], (150, 200, 255), p.dash_cd, p.dash_cd_base, "dash")
 
@@ -3226,8 +3375,10 @@ class Game:
         if self.run_time < 16 and self.state == 'playing':
             move = "Left Stick" if self.input.device == 'gamepad' else "WASD"
             parts = [f"Move: {move}    "]
-            for act, lab in (('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'),
-                             ('ability3', 'Skill 3'), ('dash', 'Dash'), ('interact', 'Stairs')):
+            acts = [('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'), ('ability3', 'Skill 3')]
+            if len(p.ranks) > 3:
+                acts.append(('ultimate', 'Ult'))
+            for act, lab in acts + [('dash', 'Dash'), ('interact', 'Stairs')]:
                 parts += [('action', act), f" {lab}   "]
             self.draw_inline(parts, WIDTH // 2, HEIGHT - 116, 24)
 
@@ -3354,14 +3505,19 @@ class Game:
         key = CLASS_ORDER[self.sel]
         c = CLASSES[key]
         self.panel((29, 500, 1222, 186), alpha=225, border=c['color'])
-        for i, name in enumerate(c['abilities']):
+        names = slot_names(key)
+        four = len(names) > 3
+        for i, name in enumerate(names):
             ab = ABILITIES[name]
-            x = 52 + i * 400
+            x = 52 + i * (300 if four else 400)
             scr.blit(self.icons[name], (x, 520))
-            self.text(ab['name'], 32, ab['color'], (x + 72, 520), outline=True)
-            self.text(f"Unlocks at level {UNLOCK_LEVELS[i]}  -  {(self.input.labels('ability%d' % (i + 1)) or ['-'])[0]}  -  {ab['cd']}s cooldown", 20, (175, 175, 200), (x + 72, 550))
-            for j, line in enumerate(self.wrap(ab['desc'], 24, 330)[:3]):
-                self.text(line, 24, (225, 225, 240), (x, 592 + j * 26), shadow=True)
+            self.text(ab['name'], 28 if four else 32, ab['color'], (x + 72, 520), outline=True)
+            key_lab = (self.input.labels(slot_key(i)) or ['-'])[0]
+            info = (f"Lv {unlock_level(i)} - {key_lab} - {ab['cd']}s" if four else
+                    f"Unlocks at level {unlock_level(i)}  -  {key_lab}  -  {ab['cd']}s cooldown")
+            self.text(info, 20, (175, 175, 200), (x + 72, 550))
+            for j, line in enumerate(self.wrap(ab['desc'], 20 if four else 24, 270 if four else 330)[:4 if four else 3]):
+                self.text(line, 20 if four else 24, (225, 225, 240), (x, 588 + j * (22 if four else 26)), shadow=True)
         how = "D-Pad / Left Stick: choose     " if self.input.device == 'gamepad' else "LEFT / RIGHT or click: choose     "
         self.draw_inline([how, ('nav', 'confirm'), " start     ", ('nav', 'back'), " back"], WIDTH // 2, 704, 26)
 

@@ -23,8 +23,13 @@ The Shadow Ninja throws 3 Shadow Shurikens in a straight line that fly through m
 after it does half), sends out a Living Shadow for 5 seconds that copies his other two abilities from where it
 stands (press the ability again to swap places with it, once per shadow), and cuts everything around him with
 Shadow Slash - the shadow's own slash also slows monsters, and a monster caught in both is only hurt once.
+At level 8 he unlocks his ULTIMATE, Death Mark (R / Circle): he vanishes (you can't be hurt for a moment) and strikes
+the monster you aim at from behind, leaving a shadow where he stood. The monster is MARKED for 3 seconds: half of
+all the damage you deal it is stored, then the mark blows up for a big hit plus that stored damage. Press R again to
+swap back to the shadow (once). The ultimate's shadow copies your abilities too, so you can have two shadows out.
+If nobody is in range, nothing happens and there's no cooldown.
 Ghala throws a Frozen Heart that freezes a monster solid, and spins a damaging Flower Ring around herself.
-Each hero has 3 abilities that unlock at levels 1, 3 and 5. Level-ups are automatic.
+Each hero has 3 abilities that unlock at levels 1, 3 and 5 (the Shadow Ninja also gets an ultimate at level 8). Level-ups are automatic.
 Hold the Stats button to see your numbers.
 
 ## The 20 floors and their bosses
@@ -110,6 +115,7 @@ and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
 | WASD / Arrow keys | Walk |
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
+| R | Ultimate (Shadow Ninja) |
 | SHIFT | Dash (you can't be hurt for a moment) |
 | E | Go down the stairs |
 | TAB (hold) | Show your stats |
@@ -139,6 +145,7 @@ Works on Windows, Mac and Linux with no extra software. You do NOT need Steam or
 | Right stick | Aim (push it all the way to auto-attack) |
 | R2 or Square | Attack |
 | L1 / R1 / L2 | Ability 1 / 2 / 3 |
+| Circle | Ultimate (Shadow Ninja) |
 | Cross (X) | Dash |
 | Triangle | Stairs / interact |
 | Create or Touchpad (hold) | Show stats |

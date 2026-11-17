@@ -964,6 +964,12 @@ def make_icon(icon, color, size=56):
             P.circle(s, w, (cx + L(dx), cy + L(dy)), L(rr), L(1))
         P.circle(s, c, (cx, cy - L(12)), L(5))
         P.polygon(s, c, [(cx - L(4), cy - L(14)), (cx, cy - r - L(6)), (cx + L(4), cy - L(14))])
+    elif icon == 'deathmark':                           # a red target mark with a blade through it
+        P.circle(s, c, (cx, cy), r, L(4))
+        P.circle(s, c, (cx, cy), r // 2, L(3))
+        P.line(s, w, (cx - r - L(4), cy + r + L(4)), (cx + r + L(4), cy - r - L(4)), L(5))
+        P.line(s, c, (cx - r - L(4), cy + r + L(4)), (cx + r + L(4), cy - r - L(4)), L(2))
+        P.circle(s, w, (cx, cy), L(4))
     elif icon == 'crescent':                            # a golden crescent flying right
         for k, (rr, wd, col) in enumerate(((r, L(7), c), (r - L(5), L(3), w))):
             P.arc(s, col, (cx - rr - L(8), cy - rr, 2 * rr, 2 * rr), -1.15, 1.15, wd)

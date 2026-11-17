@@ -61,10 +61,10 @@ class Player(Entity):
         self.blade_wave = False      # Swordsman: True while the Greatblade recast (blade waves) is unused
         self.pool_tick = 0.0         # Vampire Lord: time until the Blood Pool hurts monsters again
         self.pooled = False          # ...and whether we were in the pool last frame (to pop back out)
-        self.ability_cd = [0.0, 0.0, 0.0]
-        self.ability_max = [1.0, 1.0, 1.0]
+        self.ability_cd = [0.0, 0.0, 0.0, 0.0]       # (the 4th is the ultimate, for heroes that have one)
+        self.ability_max = [1.0, 1.0, 1.0, 1.0]
         self.buffs = {}
-        self.ranks = [1, 1, 1]       # each ability's rank (1..ABILITY_MAX_RANK)
+        self.ranks = [1, 1, 1] + ([1] if c.get('ult') else [])   # each ability's rank (1..ABILITY_MAX_RANK)
         self.skill_pts = 0           # ability points waiting to be spent
         self.items = []              # the shop items you carry (ids from items.py), at most 4
         self.istat = IT.total_stats(self.items)      # ...their stats added up, in percent
