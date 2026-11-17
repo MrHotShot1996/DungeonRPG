@@ -19,7 +19,7 @@ The Arcane Explorer shoots quick golden bolts from his gauntlet. Essence Wave is
 monsters and marks them (hit a marked monster again to burst the mark), Arcane Shift blinks you forward, blasts
 monsters where you land and fires a bolt at the nearest one, and Trueshot Barrage is a HUGE crescent that crosses
 the whole map through walls (each monster after the first takes 10% less, never under half).
-The Shadow Ninja throws 3 Shadow Shurikens that fly through monsters (the first hit is the hardest - every hit
+The Shadow Ninja throws 3 Shadow Shurikens in a straight line that fly through monsters (the first hit is the hardest - every hit
 after it does half), sends out a Living Shadow for 5 seconds that copies his other two abilities from where it
 stands (press the ability again to swap places with it, once per shadow), and cuts everything around him with
 Shadow Slash - the shadow's own slash also slows monsters, and a monster caught in both is only hurt once.

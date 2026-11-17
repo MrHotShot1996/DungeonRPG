@@ -876,7 +876,7 @@ class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
                  kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None,
-                 src='ability', ghost=False, decay=0.0, essence=False):
+                 src='ability', ghost=False, decay=0.0, essence=False, wait=0.0):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
@@ -888,6 +888,7 @@ class Bolt:
         self.ghost = ghost     # Trueshot Barrage: flies through walls, until it leaves the map
         self.decay = decay     # ...and each monster after the first takes this much less (never under half)
         self.essence = essence # Essence Wave: marks the monsters it hits
+        self.wait = wait       # seconds before it sets off (hidden until then) - shurikens thrown one after another
         self.alive = True
         self.hit = set()
 
@@ -900,6 +901,9 @@ class Bolt:
         self.alive = False
 
     def update(self, dt, game):
+        if self.wait > 0:                                # not thrown yet
+            self.wait -= dt
+            return
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.life -= dt

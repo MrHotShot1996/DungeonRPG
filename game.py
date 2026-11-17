@@ -47,7 +47,7 @@ POOL_TIME, POOL_RADIUS, POOL_TICK = 2.5, 95, 0.5    # Blood Pool: how long, how 
 CURSE_THROW, CURSE_RADIUS = 130, 105    # Blood Curse: how far in front it lands, and how wide the splash is
 CURSE_TIME, CURSE_AMP = 4.0, 1.25       # ...seconds until cursed monsters burst, and the extra damage they take (x1.25)
 CURSE_BURST, CURSE_HEAL = 0.4, 0.12     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 12% of the burst
-SHURIKEN_SPREAD = 11                    # Shadow Ninja's shurikens: degrees between the 3 of them
+SHURIKEN_GAP = 0.06                     # Shadow Ninja's shurikens: seconds between the 3 of them (one behind another)
 SHURIKEN_FALLOFF = 0.5                  # ...every hit after the first does this much of the damage (0.5 = half)
 SHADOW_TIME, SHADOW_THROW = 5.0, 170    # Living Shadow: seconds it lasts, and how far in front of you it lands
 SHADOW_SPEED = 1300                     # ...and how fast it flies there (pixels per second)
@@ -1489,13 +1489,14 @@ class Game:
         return self.shadow is not None and not self.shadow['swapped']
 
     def throw_shurikens(self, x, y, base, volley):
-        """Three shurikens in a tight fan from (x, y). `volley` is shared by every shuriken of one cast,
-        so a monster only takes the FULL hit once - everything after that is the weaker hit."""
-        for a in (-SHURIKEN_SPREAD, 0, SHURIKEN_SPREAD):
-            d = base.rotate(a)
+        """Three shurikens in a straight line from (x, y): all fly the same way, one just behind the other.
+        `volley` is shared by every shuriken of one cast, so a monster only takes the FULL hit once -
+        everything after that is the weaker hit."""
+        d = V2(base)
+        for i in range(3):
             self.bolts.append(Bolt(x + d.x * 14, y + d.y * 14, d.x * 520, d.y * 520, self.power(1.4),
                                    (185, 150, 255), 9, 0.8, pierce=True, kind='shuriken', crit=None,
-                                   falloff=SHURIKEN_FALLOFF, volley=volley))
+                                   falloff=SHURIKEN_FALLOFF, volley=volley, wait=i * SHURIKEN_GAP))
         self.burst(x + base.x * 16, y + base.y * 16, (185, 150, 255), 8, 110, glow=True)
 
     def ab_shadow_shuriken(self):
@@ -2822,6 +2823,8 @@ class Game:
             pygame.draw.circle(scr, (255, 255, 255), (sx, sy), max(1, pr.radius - 3))
             self.add_glow(sx, sy, 38, pr.color, 1.0)
         for b in self.bolts:
+            if b.wait > 0:                                                   # not thrown yet
+                continue
             sx, sy = int(b.x - cx), int(b.y - cy)
             if b.kind in ('knife', 'arrow'):
                 n = math.hypot(b.vx, b.vy) or 1
