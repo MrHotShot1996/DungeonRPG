@@ -49,6 +49,8 @@ class Player(Entity):
         self.dash_cd_base = c['dash_cd']
         self.kill_heal = c.get('kill_heal', 0)
         self.heal_bank = 0.0         # every kill adds a sliver of health here; whole points get paid out
+        self.ls_budget = self.max_hp * 0.12   # life abilities may still steal right now (refills over time)
+        self.ls_full_until = -1.0             # ability life steal: when the next FULL-strength heal is allowed
         self.cd_mult, self.ap = 1.0, 1.0
         self.level, self.xp = 1, 0
         self.xp_next = xp_for(1)

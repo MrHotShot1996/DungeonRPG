@@ -44,6 +44,12 @@ MYTHIC_ECHO_POWER = 0.8             # Echo Staff: the blast is this strong (1.0 
 MYTHIC_ECHO_RADIUS = 90
 MYTHIC_ECHO_CD = 6.0                # ...and can happen once every this many seconds
 MYTHIC_SOUL_HEAL = 0.05             # Soul Drinker: abilities heal you for this much of their damage
+ABILITY_LS_SPLASH = 1 / 3           # ...but only ONE ability hit every ABILITY_LS_WINDOW s heals fully: the rest of an
+ABILITY_LS_WINDOW = 0.2             #    area attack / volley heals at a third (like League's 'area' life steal)
+ABILITY_LS_DOT = 1 / 3              # ...and poison / damage over time heals at a third too
+ABILITY_LS_RATE = 0.02              # ALL life stolen by abilities (Soul Drinker, Blood Drain, Blood Curse) is capped:
+ABILITY_LS_STORE = 0.12             #    2% of your max health per second, saved up to 12% (so a big hit after a pause
+                                    #    still heals well, but nonstop fights can't refill you over and over)
 MYTHIC_FROST_SLOW = 1.2             # Frost Aegis: seconds your abilities slow monsters
 MYTHIC_REAPER_REFUND = 0.5          # Reaper's Hourglass: seconds off your cooldowns per kill
 MYTHIC_REAPER_HEAL = 0.02           # ...and this much of your max health healed per kill
@@ -70,7 +76,8 @@ _MYTHIC = [   # (id, name, stat A, stat B, power id, what the power does)
     ('echo_staff', 'Echo Staff', 'ap', 'cdr', 'echo',
      f'Every {MYTHIC_ECHO_CD:g}s, your next ability hit blasts every monster around the target.'),
     ('soul_drinker', 'Soul Drinker', 'ap', 'ls', 'soul',
-     f'Your abilities heal you for {int(MYTHIC_SOUL_HEAL * 100)}% of the damage they deal.'),
+     f'Your abilities heal you for {int(MYTHIC_SOUL_HEAL * 100)}% of the damage they deal '
+     f'(a third for extra targets and poison).'),
     ('frost_aegis', 'Frost Aegis', 'ap', 'df', 'frost',
      f'Your abilities SLOW the monsters they hit for {MYTHIC_FROST_SLOW:g}s.'),
     ('reapers_hourglass', "Reaper's Hourglass", 'cdr', 'ls', 'reaper',

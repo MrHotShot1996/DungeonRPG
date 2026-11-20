@@ -104,7 +104,7 @@ Cooldown reduction stops at 35%, life steal at 25% and defense at 40%.
 | Crimson Reaver | +22% Attack damage, +8% Life steal | Your life steal is DOUBLED while you are below 40% health. |
 | Titan's Maul | +22% Attack damage, +12% Defense | Basic attacks deal extra damage equal to 2% of your max health. |
 | Echo Staff | +25% Ability damage, +10% Cooldown reduction | Every 6s, your next ability hit blasts every monster around the target. |
-| Soul Drinker | +25% Ability damage, +8% Life steal | Your abilities heal you for 5% of the damage they deal. |
+| Soul Drinker | +25% Ability damage, +8% Life steal | Your abilities heal you for 5% of the damage they deal (a third for extra targets and poison). |
 | Frost Aegis | +25% Ability damage, +12% Defense | Your abilities SLOW the monsters they hit for 1.2s. |
 | Reaper's Hourglass | +10% Cooldown reduction, +8% Life steal | Every kill takes 0.5s off your cooldowns and heals 2% of your health. |
 | Guardian Clock | +10% Cooldown reduction, +12% Defense | Falling below 30% health gives you a shield that blocks everything for 2s (once every 60s). |
@@ -118,6 +118,11 @@ Want different prices or numbers? They are all at the top of `items.py`.
   health you are missing, and if you can't afford all of it you get as much as your gold buys.
   (This offer only shows up between floors, not in the Pause-menu shop.)
 - You still get a little health back for free when you take the stairs and when you level up.
+- **Life steal limits:** you can never steal more life than a monster had left (hitting a 10-HP monster for
+  500 only counts 10). With abilities, only one hit at a time heals fully: the other monsters an area attack
+  hits, and poison ticks, heal at a third. And all life stolen by abilities (Soul Drinker, Blood Drain, Blood
+  Curse) is capped at 2% of your max health per second, saved up to 12%. (The numbers are in items.py:
+  ABILITY_LS_...)
 
 ## Difficulty and speed
 - Want the game easier or harder? Open `settings.py` and change the numbers in the **DIFFICULTY** block

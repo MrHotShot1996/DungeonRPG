@@ -906,7 +906,7 @@ class Game:
                 self.refund_cooldowns(IT.MYTHIC_TEMPO_REFUND)
         elif src in ('ability', 'dot'):
             if 'soul' in p.ipow:                                                 # Soul Drinker
-                self.item_heal(dmg * IT.MYTHIC_SOUL_HEAL)
+                self.ability_heal(dmg * IT.MYTHIC_SOUL_HEAL * self.ability_ls_rate(src), item=True)
             if src == 'ability':
                 if 'frost' in p.ipow:                                            # Frost Aegis
                     e.slow_t = max(e.slow_t, IT.MYTHIC_FROST_SLOW)
@@ -918,6 +918,34 @@ class Game:
                     for o in self.enemies[:]:
                         if o in self.enemies and math.hypot(o.x - e.x, o.y - e.y) <= IT.MYTHIC_ECHO_RADIUS + o.w / 2:
                             self.damage_enemy(o, blast, crit=False, origin=(e.x, e.y), push=160, src='item')
+
+    def ability_heal(self, amount, item=False):
+        """Life stolen by an ability. It comes out of the hero's life-steal budget (ABILITY_LS_RATE per second,
+        saved up to ABILITY_LS_STORE), so no ability can heal you over and over in a long fight."""
+        p = self.player
+        if p.hp <= 0 or getattr(p, 'downed', False):
+            return 0
+        amount = min(amount, p.ls_budget, p.max_hp - p.hp)
+        if amount <= 0:
+            return 0
+        p.ls_budget -= amount
+        if item:
+            self.item_heal(amount)
+        else:
+            self.heal_player(amount)
+        return amount
+
+    def ability_ls_rate(self, src):
+        """How strongly an ability hit heals (life steal). `dmg` is already capped at the life the monster HAD,
+        so overkill never heals. One hit per ABILITY_LS_WINDOW heals fully; the other monsters an area attack or
+        volley hits at the same moment heal at a third, and so does damage over time (poison...)."""
+        p = self.player
+        if src == 'dot':
+            return IT.ABILITY_LS_DOT
+        if self.run_time >= getattr(p, 'ls_full_until', -1.0):
+            p.ls_full_until = self.run_time + IT.ABILITY_LS_WINDOW
+            return 1.0
+        return IT.ABILITY_LS_SPLASH
 
     def thorns_from(self, sx, sy):
         """Bramble Heart: remember the monster standing at (sx, sy) - the spot the hit came from - if it is
@@ -977,6 +1005,7 @@ class Game:
         if (src in ('basic', 'ability') and e in self.enemies and getattr(e, 'essence_until', 0) > self.run_time
                 and getattr(e, 'essence_owner', p) is p):
             self.essence_burst(e)                    # Essence Wave's mark bursts
+        return dealt                                 # the life the monster REALLY lost (the most you can steal)
 
     def aoe(self, x, y, radius, dmg, knock=250, stun=0.0, slow=0.0, poison=0.0, poison_t=0.0,
             color=(255, 255, 255), crit=False, ring=True, exclude=None):
@@ -1762,8 +1791,9 @@ class Game:
         self.zaps.append([[(e.x, e.y), (p.x, p.y)], 0.18, 0.18, (235, 40, 70)])
         self.blood_flow(e.x, e.y, 9)
         self.burst(e.x, e.y, (220, 30, 55), 12, 150, glow=True)
+        had = max(0, e.hp)                                    # the life it had: you can't drink more than that
         self.damage_enemy(e, self.power(1.7), knock=False)
-        self.heal_player(max(1, p.max_hp * DRAIN_HEAL))
+        self.ability_heal(min(p.max_hp * DRAIN_HEAL, had))
 
     def ab_blood_pool(self):
         """Sink into a pool of blood. Player.update() keeps you unhurtable; update_blood() hurts monsters on it."""
@@ -2121,7 +2151,7 @@ class Game:
             self.shockwave(p.x, p.y, 60, (200, 30, 55))
             self.burst(p.x, p.y, (220, 30, 55), 18, 180, glow=True)
         # --- Blood Curse: count down, then BURST
-        total = 0
+        total, bursts = 0, 0
         for e in self.enemies[:]:
             if e.curse_t <= 0 or e not in self.enemies:
                 continue
@@ -2132,16 +2162,16 @@ class Game:
                 continue
             dmg = int(self.power(1.5, 'blood_curse') + e.curse_dmg * CURSE_BURST)
             e.curse_t, e.curse_dmg = 0.0, 0.0
-            total += dmg
+            bursts += 1
             self.shockwave(e.x, e.y, 55, (235, 40, 70))
             self.burst(e.x, e.y, (230, 30, 55), 22, 240, glow=True)
             self.blood_flow(e.x, e.y, 6)
-            self.damage_enemy(e, dmg, crit=False, knock=False, curse=False)
-        if total:
+            total += self.damage_enemy(e, dmg, crit=False, knock=False, curse=False)   # (only the life it HAD)
+        if bursts:
             self.audio.play('boom')
             self.shake = max(self.shake, 0.35)
             self.rumble(0.7, 240)
-            self.heal_player(max(1, total * CURSE_HEAL))
+            self.ability_heal(total * CURSE_HEAL)
         # --- drops of blood flying home, and splashes fading on the floor
         for dr in self.drops[:]:
             if dr[2] > 0:
@@ -2387,6 +2417,7 @@ class Game:
     def update_hero(self, p, dt):
         """One hero's turn (they are the ACTIVE hero while this runs)."""
         self.levelup_t = max(0.0, self.levelup_t - dt)
+        p.ls_budget = min(p.max_hp * IT.ABILITY_LS_STORE, p.ls_budget + p.max_hp * IT.ABILITY_LS_RATE * dt)
         if (p.dash_t > 0 or p.launch_t > 0) and (not self.trail or self.trail[-1][3] <= 0.22 - 1 / 75):
             self.trail.append([p.x, p.y, p.dir_name, 0.22])
         for tr in self.trail[:]:
