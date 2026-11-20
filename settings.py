@@ -50,3 +50,14 @@ SKILL_LOCK_NEXT = 0.4         # ...and between picks, when you have more than on
 # and by AI_SMARTS_FULL_FLOOR they aim ahead of you, sidestep some of your shots and come at you from the sides.
 AI_SMARTS_FULL_FLOOR = 16     # the floor where monsters reach full cleverness
 AI_DIFFICULTY = 1.0           # 0.5 = monsters only get half as clever, 0 = no clever tricks at all
+
+# ---- DUO (two players on one PC). The monsters are tuned so a duo run feels like a solo run, for two:
+DUO_MONSTERS = 1.35           # this many times as many monsters in each room
+DUO_HP = 2.1                  # monsters have this much more health...
+DUO_BOSS_HP = 2.5             # ...and bosses this much
+DUO_DMG = 1.35                # monsters hit harder
+DUO_XP = 0.75                 # XP per kill (BOTH heroes get it - there are more monsters, so a bit less each)
+DUO_GOLD = 0.75               # gold per coin dropped by monsters (both heroes get every coin)
+REVIVE_RANGE = 70             # a downed hero is revived by the partner standing this close...
+REVIVE_TIME = 2.5             # ...for this many seconds
+REVIVE_HP = 0.35              # ...and comes back with this much of their health

@@ -5,18 +5,30 @@ import random
 import sys
 
 import pygame
+from contextlib import contextmanager
 
 from settings import *
 from dungeon import Dungeon, FLOOR
 from ai import Brain
-from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for)
+from entities import (Entity, Player, Enemy, Minion, Corpse, Item, Particle, FloatText, Bolt, BOSS_KINDS, xp_for,
+                      DUO_SCALE)
+import entities as ENT
 from sprites import Sprites, make_icon, ui_icon, item_icon, shade, add
 import items as IT
 from sounds import Audio, MUSIC_TRACKS
 from classes import (CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS, NO_DAMAGE, ULT_MAX_RANK, slot_names,
                      unlock_level, slot_key)
 from biomes import biome, floor_name
-from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon)
+from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon,
+                    PadBackend, pad_count)
+
+# Duo: the parts of the game's state that belong to ONE hero. While a hero is "active" (moving, casting, being hit)
+# these live on the Game as usual; the other hero's copies wait in that hero's .ctx (see Game.switch_to).
+PER_PLAYER = ('shadow', 'ult_shadow', 'casting', 'hp_trail', 'bolts', 'drops', 'flung', 'pending_thorns',
+              'trail', 'ai', 'levelup_t', 'input', 'last_tile')
+P_COLORS = [(255, 215, 90), (110, 215, 255)]
+ENT_PAD_EVENTS = {getattr(pygame, n) for n in ('CONTROLLERDEVICEADDED', 'JOYDEVICEADDED', 'CONTROLLERDEVICEREMOVED',
+                                               'JOYDEVICEREMOVED') if hasattr(pygame, n)}       # Player 1 gold, Player 2 blue (rings, labels)
 
 V2 = pygame.Vector2
 
@@ -136,6 +148,14 @@ class Game:
         self.t = 0.0
         self.running = True
         self.player = Player('knight')
+        self.players = [self.player]           # Solo: one hero.  Duo: two (self.player is the ACTIVE one)
+        self.duo = False
+        self.menu_player = None                # Duo: whose ability-point / shop screen is open
+        self.shop_queue = []                   # Duo: heroes still waiting for their shop after the stairs
+        self.pick1 = None                      # Duo hero select: Player 1's choice (Player 2 picks next)
+        self.pad_p1 = False                    # Duo with ONE controller: True = Player 1 has it (else Player 2)
+        self.sel_duo = False                   # the hero-select screen is choosing for a Duo run
+        self.stats_who = None
         self.dungeon = None
         self.reset_lists()
         self.minions = []
@@ -143,6 +163,8 @@ class Game:
         self.hitstop = 0.0
         self.fade = 0.0
         self.banner_text, self.banner_sub, self.banner_t = "", "", 0.0
+        self.banner_stamp = -1.0
+        self.banner_lines = {}
         self.levelup_t = 0.0
         self.boss_dead_timer = 0.0
         self.floor = 1
@@ -152,6 +174,9 @@ class Game:
         self.pal = biome(1)
         self.sel = 0
         self.input = Input(os.path.join(base_dir, 'controls.json'))
+        self.in1 = self.input                  # Player 1's input (also drives every menu)
+        self.in2 = Input(None, backend=PadBackend(1), owner=self.in1)    # Duo: Player 2's keys + 2nd controller
+        self.in2.who = 'P2'
         self.toasts = []                      # little pop-up notes ("Controller connected")
         self.menu_sel = 0
         self.return_state = 'title'           # where the Controls screen goes back to
@@ -164,6 +189,9 @@ class Game:
         self.trail = []
         self.level_surf = None
         self.backdrop = self.build_backdrop()
+        self.ai = None
+        self.last_tile = None
+        self.player.ctx = self.fresh_ctx(self.in1)
 
     def pick_frame_cap(self):
         """How many frames per second to aim for: your monitor's speed, but never more than FPS in settings.py."""
@@ -192,6 +220,93 @@ class Game:
         self.shadow = None                                # Shadow Ninja: the Living Shadow (a dict) while it is out
         self.ult_shadow = None                            # ...and the shadow Death Mark leaves behind
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
+        for q in getattr(self, 'players', ()):            # Duo: the waiting hero's own things are cleared too
+            if q is not self.player and q.ctx:
+                q.ctx.update(shadow=None, ult_shadow=None, bolts=[], drops=[], flung=[], pending_thorns=[], trail=[])
+
+    # ------------------------------------------------------------ Duo: two heroes, one game
+    def fresh_ctx(self, inp):
+        return dict(shadow=None, ult_shadow=None, casting=None, hp_trail=self.player.hp if self.player else 0,
+                    bolts=[], drops=[], flung=[], pending_thorns=[], trail=[], ai=None, levelup_t=0.0, input=inp,
+                    last_tile=None)
+
+    def switch_to(self, p):
+        """Make hero `p` the ACTIVE one: the game's `player`, its input, shadows, shots... are now p's.
+        Returns the hero that was active before (switch back to it when done - or use `as_player`)."""
+        cur = self.player
+        if p is None or p is cur:
+            return cur
+        for a in PER_PLAYER:
+            cur.ctx[a] = getattr(self, a)
+        for a in PER_PLAYER:
+            setattr(self, a, p.ctx[a])
+        self.player = p
+        return cur
+
+    @contextmanager
+    def as_player(self, p):
+        prev = self.switch_to(p)
+        try:
+            yield p
+        finally:
+            self.switch_to(prev)
+
+    def heroes(self):
+        """The heroes monsters can hurt right now (in Duo, a downed hero is left alone)."""
+        return [q for q in self.players if q.hp > 0 and not q.downed]
+
+    def target_of(self, e):
+        """Which hero monster `e` goes after (Duo): the nearest one, but it doesn't flip-flop between them."""
+        live = self.heroes()
+        if not live:
+            return self.players[0]
+        cur = getattr(e, 'tgt', None)
+        best = min(live, key=lambda q: math.hypot(q.x - e.x, q.y - e.y))
+        if cur in live and cur is not best:
+            if math.hypot(cur.x - e.x, cur.y - e.y) < math.hypot(best.x - e.x, best.y - e.y) * 1.35 + 40:
+                best = cur
+        e.tgt = best
+        return best
+
+    def partner(self, p):
+        return next((q for q in self.players if q is not p), None)
+
+    def p2_live(self):
+        """Is Player 2 playing (or choosing a hero) right now?"""
+        return self.duo or (self.state == 'select' and self.sel_duo)
+
+    def apply_seats(self, duo=None):
+        """Who uses which keys and controller. Solo: Player 1 has everything. Duo: Player 1 = left keys (WASD),
+        Player 2 = right keys (arrows); one controller goes to Player 2 (or Player 1 if swapped), two = one each."""
+        a, b = self.in1, self.in2
+        if not (self.duo if duo is None else duo):
+            a.blocked, a.pad_on = set(), True
+            a.who = ''
+            return
+        a.who, b.who = 'P1', 'P2'
+        a.blocked = {k for ks in b.kb.values() for k in ks}     # a key in Player 2's list belongs to Player 2
+        b.blocked = set()
+        n = pad_count()
+        if n >= 2:
+            a.pad_on, b.pad_on, idx = True, True, 1
+        elif n == 1:
+            a.pad_on, b.pad_on, idx = self.pad_p1, not self.pad_p1, 0
+        else:
+            a.pad_on, b.pad_on, idx = True, False, 1
+        if b.backend.index != idx:
+            b.backend.index = idx
+            b.backend.ctrl = b.backend.joy = None
+            b.backend.name = ''
+            b.backend.refresh()
+
+    def seat_label(self, slot):
+        """'Keyboard (WASD)' / 'Controller' ... for the Duo screens."""
+        inp = self.in1 if slot == 0 else self.in2
+        keys = "WASD keys" if slot == 0 else "Arrow keys"
+        if inp.pad_on and inp.backend.connected:
+            return f"{keys} or Controller"
+        return keys
+
 
     # ------------------------------------------------------------ pretty-picture helpers
     def make_vignette(self, color, strength):
@@ -336,8 +451,25 @@ class Game:
         self.screen.blit(s, (0, 0))
 
     # ------------------------------------------------------------ run setup
-    def new_run(self, cls):
+    def new_run(self, cls, cls2=None):
+        """A new game. `cls2` (Player 2's hero) makes it a DUO run."""
+        if self.player is not self.players[0]:
+            self.switch_to(self.players[0])
+        self.duo = cls2 is not None
         self.player = Player(cls)
+        self.players = [self.player]
+        self.player.ctx = self.fresh_ctx(self.in1)
+        self.input = self.in1
+        if self.duo:
+            p2 = Player(cls2)
+            p2.slot = 1
+            p2.ctx = self.fresh_ctx(self.in2)
+            p2.ctx['hp_trail'] = p2.hp
+            self.players.append(p2)
+        DUO_SCALE.update(hp=DUO_HP if self.duo else 1.0, boss_hp=DUO_BOSS_HP if self.duo else 1.0,
+                         dmg=DUO_DMG if self.duo else 1.0)
+        self.apply_seats()
+        self.menu_player, self.shop_queue = None, []
         self.minions = []
         self.floor = 1
         self.run_time = 0.0
@@ -347,6 +479,9 @@ class Game:
         self.state = 'playing'
 
     def build_floor(self):
+        if self.player is not self.players[0]:        # (Duo: always built with Player 1 active)
+            with self.as_player(self.players[0]):
+                return self.build_floor()
         self.reset_lists()
         self.pal = biome(self.floor)
         self.fog_img = self.make_fog(self.pal['mote'])
@@ -357,6 +492,15 @@ class Game:
         cx, cy = rooms[0].center
         p.x, p.y = (cx + 0.5) * TILE, (cy + 0.5) * TILE
         p.kx = p.ky = 0
+        for q in self.players[1:]:                    # Duo: Player 2 starts right next to Player 1
+            q.x, q.y = p.x, p.y
+            for ox, oy in ((40, 0), (-40, 0), (0, 40), (0, -40)):
+                r = pygame.Rect(int(p.x + ox - q.w / 2), int(p.y + oy - q.h / 2), q.w, q.h)
+                if not self.dungeon.hits_wall(r):
+                    q.x, q.y = p.x + ox, p.y + oy
+                    break
+            q.kx = q.ky = 0
+            q.ctx['ai'] = Brain(self)                 # each hero gets a brain (the monsters after THEM)
         boss_kind = BOSS_FLOORS.get(self.floor)
 
         w = spawn_weights(self.floor)
@@ -373,6 +517,9 @@ class Game:
                 continue
             count = min(MAX_MONSTERS_PER_ROOM, random.randint(1, 2) + self.floor // 2 + (1 if self.floor >= 8 else 0)
                         + (1 if self.floor >= EXTRA_MONSTERS_FROM_FLOOR else 0))
+            if self.duo:                              # more monsters for two heroes (0.35 extra = sometimes one more)
+                extra = count * (DUO_MONSTERS - 1)
+                count = min(MAX_MONSTERS_PER_ROOM + 2, count + int(extra) + (1 if random.random() < extra % 1 else 0))
             for _ in range(count):
                 kind = random.choices(kinds, weights)[0]
                 x, y = self.dungeon.random_spot(room)
@@ -397,7 +544,8 @@ class Game:
 
         for m in self.minions:                       # your allies come with you!
             a = random.random() * 6.28
-            m.x, m.y = p.x + math.cos(a) * 36, p.y + math.sin(a) * 36
+            own = getattr(m, 'owner', None) or p
+            m.x, m.y = own.x + math.cos(a) * 36, own.y + math.sin(a) * 36
             m.target = None
             m.spawn = 0.4
 
@@ -409,6 +557,10 @@ class Game:
         self.cam = V2(p.x - WIDTH / 2, p.y - HEIGHT / 2)
         self.fade = 1.0
         self.trail = []
+        for q in self.players[1:]:
+            with self.as_player(q):
+                self.last_tile = None
+                self.reveal()
         tier = BOSS_TIER.get(BOSS_FLOORS.get(self.floor))
         self.show_banner(f"Floor {self.floor}", floor_name(self.floor) + (f"  -  {tier}!" if tier else ""))
 
@@ -716,7 +868,8 @@ class Game:
             self.kill_enemy(e)
         if p.items and src not in ('ally', 'item'):  # shop item powers (last, so a blast can't kill `e` twice)
             self.item_on_hit(e, dealt, src)
-        if src in ('basic', 'ability') and e in self.enemies and getattr(e, 'essence_until', 0) > self.run_time:
+        if (src in ('basic', 'ability') and e in self.enemies and getattr(e, 'essence_until', 0) > self.run_time
+                and getattr(e, 'essence_owner', p) is p):
             self.essence_burst(e)                    # Essence Wave's mark bursts
 
     def aoe(self, x, y, radius, dmg, knock=250, stun=0.0, slow=0.0, poison=0.0, poison_t=0.0,
@@ -755,9 +908,9 @@ class Game:
 
     def hurt_around(self, x, y, radius, dmg):
         """Damage the player AND the player's allies inside a circle (used by bombs and slams)."""
-        p = self.player
-        if math.hypot(p.x - x, p.y - y) < radius + 11:
-            p.hurt(dmg, x, y, self)
+        for p in self.heroes():
+            if math.hypot(p.x - x, p.y - y) < radius + 11:
+                p.hurt(dmg, x, y, self)
         for m in self.minions[:]:
             if math.hypot(m.x - x, m.y - y) < radius + m.w / 2:
                 m.hurt(dmg, self)
@@ -789,7 +942,10 @@ class Game:
         if p.launch is e:
             p.launch, p.launch_t = None, 0.0
         p.kills += 1
-        p.xp += e.xp
+        boss = e.kind in BOSS_KINDS                  # (Duo: there's still only ONE boss, so its rewards aren't cut)
+        xp = e.xp if not self.duo or boss else max(1, int(round(e.xp * DUO_XP)))
+        for q in self.players:                       # (Duo: both heroes get the XP)
+            q.xp += xp
         if 'reaper' in p.ipow:                       # Reaper's Hourglass
             self.refund_cooldowns(IT.MYTHIC_REAPER_REFUND)
             self.item_heal(p.max_hp * IT.MYTHIC_REAPER_HEAL)
@@ -817,12 +973,16 @@ class Game:
         if random.random() < (0.5 if not e.elite else 1.0) or e.kind in ('boss', 'brute', 'warlord'):
             n = random.randint(1, 3) if e.kind not in BOSS_KINDS else 10
             for _ in range(n + (3 if e.elite else 0)):
-                self.items.append(Item('coin', e.x + random.randint(-18, 18), e.y + random.randint(-18, 18),
-                                       gold(random.randint(3, 8), self.floor)))
-        self.float_text(e.x, e.y - 36, f"+{e.xp} XP", (140, 195, 255))
-        while p.xp >= p.xp_next:
-            p.xp -= p.xp_next
-            self.level_up()
+                v = gold(random.randint(3, 8), self.floor)
+                if self.duo and not boss:
+                    v = max(1, int(round(v * DUO_GOLD)))
+                self.items.append(Item('coin', e.x + random.randint(-18, 18), e.y + random.randint(-18, 18), v))
+        self.float_text(e.x, e.y - 36, f"+{xp} XP", (140, 195, 255))
+        for q in self.players:
+            with self.as_player(q):
+                while q.xp >= q.xp_next:
+                    q.xp -= q.xp_next
+                    self.level_up()
         if e.kind == 'demon':
             self.projectiles.clear()
             self.boss_dead_timer = 3.0
@@ -862,7 +1022,8 @@ class Game:
                 and sum(p.ranks) + p.skill_pts < sum(self.max_rank(i) for i in range(len(p.ranks)))):
             p.skill_pts += 1                                  # an ability point! (spent on the 'skill' screen)
             lines.append("Ability point!")
-        p.hp = min(p.max_hp, p.hp + int(p.max_hp * LEVELUP_HEAL))
+        if not p.downed:                                      # (Duo: a downed hero stays down until revived)
+            p.hp = min(p.max_hp, p.hp + int(p.max_hp * LEVELUP_HEAL))
         self.audio.play('levelup2')
         self.rumble(0.5, 350)
         self.float_text(p.x, p.y - 46, "LEVEL UP!", (255, 235, 110), big=True)
@@ -873,17 +1034,42 @@ class Game:
         if p.level in UNLOCK_LEVELS:
             slot = UNLOCK_LEVELS.index(p.level)
             name = ABILITIES[c['abilities'][slot]]['name']
-            self.show_banner(f"New ability: {name}", f"Press {slot + 1} to use it")
+            key_lab = (self.input.labels(slot_key(slot)) or [str(slot + 1)])[0]
+            self.unlock_banner(f"New ability: {name}", f"Press {key_lab} to use it", f"{name} ({key_lab})")
             self.audio.play('unlock')
         names = slot_names(p.cls)
         if len(names) > 3 and p.level == unlock_level(3):     # the ultimate unlocks
             key_lab = (self.input.labels('ultimate') or ['R'])[0]
-            self.show_banner(f"ULTIMATE: {ABILITIES[names[3]]['name']}", f"Press {key_lab} to use it")
+            self.unlock_banner(f"ULTIMATE: {ABILITIES[names[3]]['name']}", f"Press {key_lab} to use it",
+                               f"ULTIMATE {ABILITIES[names[3]]['name']} ({key_lab})")
             self.audio.play('unlock')
 
+    def unlock_banner(self, title, sub, short):
+        """'New ability' banner. Duo: both heroes level together, so their unlocks share ONE banner."""
+        if not self.duo:
+            self.show_banner(title, sub)
+            return
+        if not (self.banner_text == "New abilities!" and self.banner_stamp == self.t):
+            self.banner_lines = {}                                  # (a new moment: start a fresh banner)
+        self.banner_lines[self.player.slot] = short                 # one line per hero (the newest)
+        self.show_banner("New abilities!", "      ".join(f"P{k + 1}: {v}" for k, v in sorted(self.banner_lines.items())))
+        self.banner_stamp = self.t
+
     def on_player_death(self):
-        self.state = 'dead'
-        self.audio.play('gameover')
+        if not self.duo:
+            self.state = 'dead'
+            self.audio.play('gameover')
+            return
+        for q in self.players:                       # Duo: a hero at 0 health goes DOWN (the partner can revive)
+            if q.hp <= 0 and not q.downed:
+                q.hp, q.downed, q.revive = 0, True, 0.0
+                q.dash_t, q.launch, q.launch_t, q.kx, q.ky = 0.0, None, 0.0, 0.0, 0.0
+                q.buffs.pop('pool', None)
+                self.float_text(q.x, q.y - 46, f"P{q.slot + 1} IS DOWN!", (255, 110, 110), big=True)
+                self.audio.play('deflect')
+        if not self.heroes():                        # both down: the run is over
+            self.state = 'dead'
+            self.audio.play('gameover')
 
     def try_descend(self):
         p = self.player
@@ -894,22 +1080,31 @@ class Game:
                 return
             self.audio.play('stairs')
             self.floor += 1
-            p.hp = min(p.max_hp, p.hp + int(p.max_hp * STAIRS_HEAL))
+            for q in self.players:                   # (Duo: the partner comes along - and gets back up)
+                if q.downed:
+                    self.revive_hero(q, STAIRS_HEAL)
+                else:
+                    q.hp = min(q.max_hp, q.hp + int(q.max_hp * STAIRS_HEAL))
             self.build_floor()
-            self.open_shop('playing')
+            self.open_shop('playing', queue=True)
 
     # ------------------------------------------------------------ ALLIES (minions)
+    def mine(self, m):
+        """Is ally `m` the active hero's? (Duo: each hero has their own allies.)"""
+        return getattr(m, 'owner', self.player) is self.player
+
     def count_group(self, g):
-        return sum(1 for m in self.minions if m.group == g)
+        return sum(1 for m in self.minions if m.group == g and self.mine(m))
 
     def summon(self, kind, x, y, group, life=None):
         p = self.player
         cap = MINION_CAPS.get(group, 6)
         while self.count_group(group) >= cap:
-            old = next(m for m in self.minions if m.group == group)
+            old = next(m for m in self.minions if m.group == group and self.mine(m))
             self.minions.remove(old)
             self.burst(old.x, old.y, (180, 255, 200), 8, 90, glow=True)
         m = Minion(kind, x, y, p.level, life, group)
+        m.owner = p
         if self.casting:                                    # summoned by an ability: its rank makes them stronger
             m.mult *= self.rank_damage(self.rank_of(self.casting))
         if self.dungeon.hits_wall(m.rect):
@@ -1498,6 +1693,7 @@ class Game:
         for e in self.enemies:
             if math.hypot(e.x - cx, e.y - cy) <= CURSE_RADIUS + e.w / 2:
                 e.curse_t, e.curse_dmg = CURSE_TIME, 0.0
+                e.curse_owner = self.player
                 n += 1
         self.aoe(cx, cy, CURSE_RADIUS, self.power(0.6), knock=0, color=(220, 40, 60))
         if n:
@@ -1711,10 +1907,12 @@ class Game:
         self.damage_enemy(e, self.power(1.5), crit=True, origin=(sx, sy))
         if e in self.enemies and e.hp > 0:                # the mark goes on AFTER the strike (it isn't stored)
             e.dm_until, e.dm_store = self.run_time + DEATH_TIME, 0.0
+            e.dm_owner = self.player
 
     def update_death_marks(self):
         for e in self.enemies[:]:
-            if getattr(e, 'dm_until', 0) and self.run_time >= e.dm_until and e in self.enemies:
+            if (getattr(e, 'dm_until', 0) and self.run_time >= e.dm_until and e in self.enemies
+                    and getattr(e, 'dm_owner', self.player) is self.player):
                 self.death_burst(e)
 
     def death_burst(self, e):
@@ -1733,6 +1931,7 @@ class Game:
     def essence_mark(self, e):
         """Essence Wave marks a monster. Your next attack or ability on it bursts the mark."""
         e.essence_until = self.run_time + ESSENCE_TIME
+        e.essence_owner = self.player
 
     def essence_burst(self, e):
         e.essence_until = 0
@@ -1820,6 +2019,8 @@ class Game:
         for e in self.enemies[:]:
             if e.curse_t <= 0 or e not in self.enemies:
                 continue
+            if getattr(e, 'curse_owner', self.player) is not self.player:     # (Duo: the other Vampire's curse)
+                continue
             e.curse_t -= dt
             if e.curse_t > 0:
                 continue
@@ -1901,26 +2102,30 @@ class Game:
 
     # ------------------------------------------------------------ updating
     def update_items(self, dt):
-        p = self.player
-        pr = p.rect
+        hs = self.heroes() if self.duo else [self.player]
+        if not hs:
+            return
         for it in self.items[:]:
             it.t += dt
+            p = min(hs, key=lambda q: math.hypot(q.x - it.x, q.y - it.y))
             if it.kind == 'coin':
                 d = math.hypot(p.x - it.x, p.y - it.y)
                 if 1 < d < 90:
                     it.x += (p.x - it.x) / d * 260 * dt
                     it.y += (p.y - it.y) / d * 260 * dt
-            if not pr.colliderect(it.rect):
+            if not p.rect.colliderect(it.rect):
                 continue
             if it.kind == 'coin':
-                p.gold += it.value
+                for q in self.players:              # (Duo: every coin counts for both heroes)
+                    q.gold += it.value
                 self.audio.play('coin')
                 self.float_text(it.x, it.y - 10, f"+{it.value}", (255, 215, 70))
                 self.items.remove(it)
             elif it.kind == 'chest' and not it.opened:
                 it.opened = True
                 g = gold(random.randint(15, 35), self.floor)
-                p.gold += g
+                for q in self.players:
+                    q.gold += g
                 self.audio.play('chest')
                 self.float_text(it.x, it.y - 20, f"+{g} gold!", (255, 215, 70), big=True)
                 self.burst(it.x, it.y, (255, 230, 120), 20, 160, glow=True)
@@ -1955,7 +2160,6 @@ class Game:
             f[5] -= dt
             if f[5] <= 0:
                 self.flashes.remove(f)
-        self.levelup_t = max(0.0, self.levelup_t - dt)
         necro = self.player.cls == 'necromancer'
         for c in self.corpses[:]:
             c.life -= dt
@@ -1975,6 +2179,12 @@ class Game:
 
     def update_camera(self, dt):
         p = self.player
+        if self.duo:                                 # Duo: halfway between the two heroes
+            mx = sum(q.x for q in self.players) / len(self.players)
+            my = sum(q.y for q in self.players) / len(self.players)
+            target = V2(mx - WIDTH / 2, my - HEIGHT / 2)
+            self.cam += (target - self.cam) * min(1.0, dt * 7)
+            return
         target = V2(p.x - WIDTH / 2 + p.face.x * 24, p.y - HEIGHT / 2 + p.face.y * 16)
         self.cam += (target - self.cam) * min(1.0, dt * 7)
 
@@ -1989,53 +2199,77 @@ class Game:
         self.shake = max(0.0, self.shake - dt)
         self.update_motes(dt)
         self.show_stats = self.input.held('stats') and self.state == 'playing'
+        self.stats_who = self.players[0] if self.show_stats else None
+        if self.duo and self.state == 'playing' and self.in2.held('stats'):
+            self.show_stats, self.stats_who = True, self.players[1]
         for t in self.toasts[:]:
             t[2] -= dt
             if t[2] <= 0:
                 self.toasts.remove(t)
-        if self.state == 'playing' and self.player and self.player.skill_pts > 0 and self.player.hp > 0:
-            self.open_skill()                           # an ability point to spend: pause and choose
+        if self.state == 'playing':
+            for q in self.players:                      # an ability point to spend: pause and choose
+                if q.skill_pts > 0 and q.hp > 0 and not q.downed:
+                    self.menu_player = q
+                    with self.as_player(q):
+                        self.open_skill()
+                    if self.state == 'skill':
+                        break
         if self.state == 'playing':
             if self.hitstop > 0:                        # tiny freeze on big hits (feels crunchy!)
                 self.hitstop -= dt
                 return
-            p = self.player
             self.run_time += dt
-            if (p.dash_t > 0 or p.launch_t > 0) and (not self.trail or self.trail[-1][3] <= 0.22 - 1 / 75):
-                self.trail.append([p.x, p.y, p.dir_name, 0.22])
-            for tr in self.trail[:]:
-                tr[3] -= dt
-                if tr[3] <= 0:
-                    self.trail.remove(tr)
-            p.update(dt, self.input, self)
-            self.update_flowers()
-            self.ai.update(dt)
+            before = {q: (q.x, q.y) for q in self.players}
+            for q in self.players:                      # each hero moves, attacks, ... (Solo: just the one)
+                with self.as_player(q):
+                    self.update_hero(q, dt)
+            if self.duo:
+                self.tether(before)
+            for i, q in enumerate(self.players):        # the monsters' brains (Duo: one per hero)
+                with self.as_player(q):
+                    if self.ai is not None and (i == 0 or not q.downed):
+                        self.ai.update(dt, lead=(i == 0))
             for e in self.enemies[:]:
                 if e in self.enemies:
-                    e.update(dt, self)
+                    if self.duo:                        # it goes after the nearest hero
+                        with self.as_player(self.target_of(e)):
+                            e.update(dt, self)
+                    else:
+                        e.update(dt, self)
             for m in self.minions[:]:
                 if m in self.minions:
-                    m.update(dt, self)
+                    with self.as_player(getattr(m, 'owner', None) if getattr(m, 'owner', None) in self.players
+                                        else self.player):
+                        m.update(dt, self)
             for pr in self.projectiles[:]:
                 pr.update(dt, self)
                 if not pr.alive:
                     self.projectiles.remove(pr)
-            for b in self.bolts[:]:
-                b.update(dt, self)
-                if not b.alive:
-                    self.bolts.remove(b)
-            self.update_flung(dt)
-            self.update_blood(dt)
-            self.update_shadow(dt)
-            self.update_thorns()
+            for q in self.players:                      # each hero's own shots, shadows, blood...
+                with self.as_player(q):
+                    for b in self.bolts[:]:
+                        b.update(dt, self)
+                        if not b.alive and b in self.bolts:
+                            self.bolts.remove(b)
+                    self.update_flung(dt)
+                    self.update_blood(dt)
+                    self.update_shadow(dt)
+                    self.update_thorns()
             self.update_items(dt)
             self.update_fx(dt)
-            self.reveal()
+            for q in self.players:
+                with self.as_player(q):
+                    self.reveal()
+                    if self.hp_trail > q.hp:
+                        self.hp_trail = max(q.hp, self.hp_trail - q.max_hp * 0.35 * dt)
+                    else:
+                        self.hp_trail = q.hp
+            if self.duo:
+                self.update_revive(dt)
+                for q in self.players:                  # a downed hero can't be healed (only revived)
+                    if q.downed:
+                        q.hp = 0
             self.update_camera(dt)
-            if self.hp_trail > p.hp:
-                self.hp_trail = max(p.hp, self.hp_trail - p.max_hp * 0.35 * dt)
-            else:
-                self.hp_trail = p.hp
             if self.boss_dead_timer > 0:
                 self.boss_dead_timer -= dt
                 if self.boss_dead_timer <= 0:
@@ -2044,15 +2278,92 @@ class Game:
         elif self.state == 'dead':
             self.update_fx(dt)
 
+    def update_hero(self, p, dt):
+        """One hero's turn (they are the ACTIVE hero while this runs)."""
+        self.levelup_t = max(0.0, self.levelup_t - dt)
+        if (p.dash_t > 0 or p.launch_t > 0) and (not self.trail or self.trail[-1][3] <= 0.22 - 1 / 75):
+            self.trail.append([p.x, p.y, p.dir_name, 0.22])
+        for tr in self.trail[:]:
+            tr[3] -= dt
+            if tr[3] <= 0:
+                self.trail.remove(tr)
+        if p.downed:
+            p.hurt_flash = max(0.0, p.hurt_flash - dt)
+            return
+        p.update(dt, self.input, self)
+        self.update_flowers()
+
+    def tether(self, before):
+        """Duo: both heroes share one screen, so neither may WALK so far from the other that they'd leave it.
+        (Blinks and swaps are allowed - after one you just can't walk further away.)"""
+        a, b = self.players
+        lim_x, lim_y = WIDTH - 170, HEIGHT - 150
+        for q, o in ((a, b), (b, a)):
+            ox, oy = before[q]
+            if abs(q.x - o.x) > lim_x and abs(q.x - o.x) > abs(ox - o.x) and abs(q.x - ox) < 60:
+                q.x = ox
+            if abs(q.y - o.y) > lim_y and abs(q.y - o.y) > abs(oy - o.y) and abs(q.y - oy) < 60:
+                q.y = oy
+
+    def update_revive(self, dt):
+        """Duo: stand next to a downed partner to bring them back."""
+        for q in self.players:
+            if not q.downed:
+                continue
+            near = [h for h in self.heroes() if math.hypot(h.x - q.x, h.y - q.y) < REVIVE_RANGE]
+            if near:
+                q.revive += dt
+                if random.random() < 0.4 * self.fx:
+                    self.particles.append(Particle(q.x + random.uniform(-14, 14), q.y + 8, 0, -60, 0.6,
+                                                   (140, 255, 170), 3, True))
+            else:
+                q.revive = max(0.0, q.revive - dt * 0.5)
+            if q.revive >= REVIVE_TIME:
+                self.revive_hero(q, REVIVE_HP)
+
+    def revive_hero(self, q, frac):
+        q.downed, q.revive = False, 0.0
+        q.hp = max(1, int(q.max_hp * frac))
+        q.invuln = max(q.invuln, 2.0)
+        q.kx = q.ky = 0.0
+        with self.as_player(q):
+            self.hp_trail = q.hp
+        self.audio.play('levelup2')
+        self.float_text(q.x, q.y - 40, "REVIVED!", (140, 255, 170), big=True)
+        self.burst(q.x, q.y, (140, 255, 170), 24, 200, glow=True)
+        self.shockwave(q.x, q.y, 80, (140, 255, 170))
+
+    def begin_frame(self):
+        """Start of a frame: forget last frame's key presses (both players)."""
+        self.in1.begin_frame()
+        self.in2.begin_frame()
+
+    def feed_event(self, e):
+        """A pygame event: to Player 1's input (it may eat it while rebinding), Player 2's in Duo, then the game."""
+        if self.in1.handle_event(e):
+            return
+        if self.p2_live():
+            self.in2.handle_event(e)
+        if e.type in ENT_PAD_EVENTS and self.p2_live():
+            self.apply_seats(duo=True)               # a controller was plugged in / out: share them out again
+        self.handle_event(e)
+
     # ------------------------------------------------------------ menus
     SETTING_LABELS = {'deadzone': 'Stick dead zone', 'vibration': 'Vibration', 'stick_aims': 'Right stick aims',
                       'stick_attack': 'Right stick auto-attacks', 'aim_assist': 'Aim assist'}
 
     def title_items(self):
-        return [("START GAME", self.go_select), ("MUSIC", lambda: self.open_music('title')),
+        return [("SOLO", lambda: self.go_select(False)), ("DUO", lambda: self.go_select(True)),
+                ("MUSIC", lambda: self.open_music('title')),
                 ("CONTROLS", lambda: self.open_controls('title')), ("QUIT", self.quit_game)]
 
     def pause_items(self):
+        if self.duo:
+            return [("RESUME", self.resume),
+                    ("SHOP: PLAYER 1", lambda: self.open_shop('paused', who=self.players[0])),
+                    ("SHOP: PLAYER 2", lambda: self.open_shop('paused', who=self.players[1])),
+                    ("MUSIC", lambda: self.open_music('paused')), ("CONTROLS", lambda: self.open_controls('paused')),
+                    ("QUIT TO TITLE", self.go_title)]
         return [("RESUME", self.resume), ("SHOP", lambda: self.open_shop('paused')),
                 ("MUSIC", lambda: self.open_music('paused')), ("CONTROLS", lambda: self.open_controls('paused')),
                 ("QUIT TO TITLE", self.go_title)]
@@ -2071,13 +2382,32 @@ class Game:
         whenever an entry is added or reordered."""
         return next((i for i, (lab, _) in enumerate(items) if lab == label), 0)
 
-    def go_select(self):
+    def go_select(self, duo=False):
+        """The hero-select screen. Duo: Player 1 picks first, then Player 2."""
         self.audio.play('select')
         self.sel = 0
+        self.sel_duo, self.pick1 = duo, None
+        self.apply_seats(duo=duo)
+        self.in2.begin_frame()
         self.state = 'select'
+
+    def select_confirm(self, i):
+        """Hero `i` was chosen on the select screen."""
+        self.audio.play('select')
+        if self.sel_duo and self.pick1 is None:      # Player 1 has chosen: now Player 2
+            self.pick1 = CLASS_ORDER[i]
+            return
+        if self.sel_duo:
+            self.new_run(self.pick1, CLASS_ORDER[i])
+        else:
+            self.new_run(CLASS_ORDER[i])
 
     def go_title(self):
         self.audio.play('select')
+        if self.player is not self.players[0]:
+            self.switch_to(self.players[0])
+        self.duo, self.sel_duo = False, False
+        self.apply_seats(duo=False)
         self.state = 'title'
         self.menu_sel = 0
 
@@ -2149,7 +2479,8 @@ class Game:
     def draw_skill(self):
         p, scr = self.player, self.screen
         self.dim((10, 6, 24), 150)
-        self.text("ABILITY POINT!", 64, (255, 222, 90), (WIDTH // 2, 112), center=True, outline=True)
+        self.text("ABILITY POINT!" if not self.duo else f"PLAYER {self.player.slot + 1}: ABILITY POINT!", 64,
+                  (255, 222, 90) if not self.duo else P_COLORS[self.player.slot], (WIDTH // 2, 112), center=True, outline=True)
         more = f"   ({p.skill_pts} points to spend)" if p.skill_pts > 1 else ""
         locked_now = self.skill_lock > 0
         self.text("Get ready..." if locked_now else "Choose an ability to make stronger" + more, 28,
@@ -2379,7 +2710,14 @@ class Game:
             self.shop_sell = None
             self.audio.play('select')
 
-    def open_shop(self, back_to):
+    def menu_owner(self):
+        """Whose ability-point screen / shop is open (Duo); Player 1 otherwise."""
+        return self.menu_player if self.menu_player in self.players else self.players[0]
+
+    def open_shop(self, back_to, who=None, queue=False):
+        """`who` = whose shop (Duo). `queue`: after the stairs, every hero gets a turn, one after another."""
+        self.menu_player = who or self.players[0]
+        self.shop_queue = [q for q in self.players if q is not self.menu_player] if queue else []
         self.audio.play('select')
         self.return_state = back_to
         self.state = 'shop'
@@ -2387,6 +2725,14 @@ class Game:
         self.shop_sel = self.shop_first_item()
 
     def close_shop(self):
+        if self.shop_queue:                          # Duo: now the next hero's turn to shop
+            nxt = self.shop_queue.pop(0)
+            back = self.return_state
+            rest = self.shop_queue
+            self.open_shop(back, who=nxt)
+            self.shop_queue = rest
+            return
+        self.menu_player = None
         self.audio.play('select')
         self.state = self.return_state
         self.shop_sell = None
@@ -2419,6 +2765,8 @@ class Game:
     def ctl_rows(self):
         if self.ctl_tab == 0:
             rows = [('bind', a) for a in GAME_ACTIONS] + [('reset', None)]
+        elif self.ctl_tab == 3:                               # Duo: Player 2's keys
+            rows = [('bind', a) for a in GAME_ACTIONS if a != 'mute'] + [('reset', None)]
         elif self.ctl_tab == 1:
             rows = ([('bind', a) for a in PAD_ACTIONS] + [('slider', 'deadzone'), ('toggle', 'vibration'),
                     ('toggle', 'stick_aims'), ('toggle', 'stick_attack'), ('toggle', 'aim_assist'), ('reset', None)])
@@ -2427,12 +2775,12 @@ class Game:
         return rows + [('back', None)]
 
     def set_tab(self, i):
-        self.ctl_tab, self.ctl_row, self.ctl_col = i % 3, 0, 0
+        self.ctl_tab, self.ctl_row, self.ctl_col = i % len(self.TAB_NAMES), 0, 0
         self.audio.play('select')
 
     def ctl_reset(self):
-        if self.ctl_tab in (0, 1):
-            self.input.reset('keyboard' if self.ctl_tab == 0 else 'gamepad')
+        if self.ctl_tab in self.TAB_DEVICE:
+            self.input.reset(self.TAB_DEVICE[self.ctl_tab])
             self.toast("Controls reset to the defaults", (170, 230, 255))
             self.audio.play('select')
 
@@ -2441,7 +2789,7 @@ class Game:
         kind, key = rows[min(self.ctl_row, len(rows) - 1)]
         inp = self.input
         if kind == 'bind':
-            device = 'keyboard' if self.ctl_tab == 0 else 'gamepad'
+            device = self.TAB_DEVICE.get(self.ctl_tab, 'keyboard')
             if device == 'gamepad' and not inp.backend.connected:
                 self.toast("No controller found. Connect one first (see the LAYOUT & SETUP tab).", (255, 170, 140))
                 self.audio.play('deflect')
@@ -2494,11 +2842,16 @@ class Game:
     # ------------------------------------------------------------ turning input into game actions
     def process_input(self):
         inp = self.input
-        for msg, col in inp.messages:
-            self.toast(msg, col)
-        inp.messages.clear()
+        for i_ in (self.in1, self.in2):
+            for msg, col in i_.messages:
+                self.toast(msg, col)
+            i_.messages.clear()
         if inp.capture is not None:                  # the Controls screen is waiting for a new key/button
             return
+        if self.p2_live() and self.state not in ('playing', 'skill', 'shop'):
+            inp._nav += self.in2._nav_pad              # Duo: Player 2's controller can work the menus too
+            if self.in2.pressed('pause'):
+                inp._pressed.add('pause')
         if inp.pressed('mute'):
             self.audio.toggle_mute()
             self.toast("Sound OFF" if self.audio.muted else "Sound ON")
@@ -2511,21 +2864,36 @@ class Game:
                 self.sel = (self.sel - 1) % n
             if inp.nav('right'):
                 self.sel = (self.sel + 1) % n
-            if inp.nav('confirm'):
+            if self.sel_duo and (inp.nav('tab_next') or inp.nav('tab_prev')) and pad_count() == 1:
+                self.pad_p1 = not self.pad_p1            # one controller: who gets it?
+                self.apply_seats(duo=True)
                 self.audio.play('select')
-                self.new_run(CLASS_ORDER[self.sel])
+            if inp.nav('confirm'):
+                self.select_confirm(self.sel)
             elif inp.nav('back'):
-                self.go_title()
+                if self.sel_duo and self.pick1 is not None:
+                    self.sel = CLASS_ORDER.index(self.pick1)      # Player 2 went back: Player 1 chooses again
+                    self.pick1 = None
+                    self.audio.play('select')
+                else:
+                    self.go_title()
         elif st == 'playing':
-            if inp.pressed('pause'):
+            if inp.pressed('pause') or (self.duo and self.in2.pressed('pause')):
                 self.state = 'paused'
                 self.menu_sel = 0
                 return
-            if inp.pressed('interact'):
-                self.try_descend()
-            for i in range(len(self.player.ranks)):
-                if inp.pressed(slot_key(i)):
-                    self.use_ability(i)
+            for q in self.players:
+                if q.downed or self.state != 'playing':
+                    continue
+                with self.as_player(q):
+                    qi = self.input
+                    if qi.pressed('interact'):
+                        self.try_descend()
+                    if self.state != 'playing':
+                        continue
+                    for i in range(len(q.ranks)):
+                        if qi.pressed(slot_key(i)):
+                            self.use_ability(i)
         elif st == 'paused':
             if inp.pressed('pause') or inp.nav('back'):
                 self.resume()
@@ -2536,9 +2904,11 @@ class Game:
         elif st == 'music':
             self.music_input()
         elif st == 'shop':
-            self.shop_input()
+            with self.as_player(self.menu_owner()):
+                self.shop_input()
         elif st == 'skill':
-            self.skill_input()
+            with self.as_player(self.menu_owner()):
+                self.skill_input()
         elif st in ('dead', 'victory'):
             if inp.nav('confirm'):
                 self.go_title()
@@ -2578,8 +2948,9 @@ class Game:
         if self.state == 'select':
             for i, r in enumerate(self.select_rects()):
                 if r.collidepoint(pos):
-                    self.audio.play('select')
-                    self.new_run(CLASS_ORDER[i])
+                    self.sel = i
+                    self.select_confirm(i)
+                    return
             return
         if self.input.capture is not None:
             return
@@ -2610,9 +2981,11 @@ class Game:
         if e.type == pygame.QUIT:
             self.running = False
         elif e.type == pygame.MOUSEMOTION:
-            self.mouse_hover(e.pos)
+            with self.as_player(self.menu_owner() if self.state in ('skill', 'shop') else self.player):
+                self.mouse_hover(e.pos)
         elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
-            self.mouse_click(e.pos)
+            with self.as_player(self.menu_owner() if self.state in ('skill', 'shop') else self.player):
+                self.mouse_click(e.pos)
         elif e.type == pygame.KEYDOWN:
             if e.key == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
@@ -2689,7 +3062,7 @@ class Game:
             scr.blit(ice, (int(sx - iw // 2), int(top - 3)))
             self.draw_heart(sx, int(top - 12), 6, (255, 150, 200))
             self.add_glow(sx, sy, 60, (150, 215, 255), 0.7)
-        if self.player.sky_mark_enemy is o and self.sky_recast_ready():   # the Monk's orb, stuck to it
+        if any(q.sky_mark_enemy is o and q.buffs.get('sky_mark', 0) > 0 for q in self.players):   # the Monk's orb
             for k in range(2):
                 a = self.t * 5 + k * math.pi
                 ox, oy = int(sx + math.cos(a) * (o.w * 0.5 + 12)), int(sy - 4 + math.sin(a) * (o.w * 0.25 + 6))
@@ -2727,6 +3100,36 @@ class Game:
             for k in range(3):
                 a = self.t * 6 + k * 2.1
                 pygame.draw.circle(scr, (255, 235, 90), (int(sx + math.cos(a) * 12), int(top + 6 + math.sin(a) * 4)), 3)
+
+    def draw_downed(self, q, sx, sy):
+        """Duo: a downed hero lies on the floor, greyed out, with a revive bar over them."""
+        sp, scr = self.sprites, self.screen
+        img = pygame.transform.rotate(sp.player[(q.cls, 'right', 0)], 90)
+        grey = img.copy()
+        grey.fill((120, 120, 140, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        scr.blit(grey, (sx - grey.get_width() // 2, int(sy + q.h / 2 + 2 - grey.get_height() * 0.75)))
+        k = min(1.0, q.revive / REVIVE_TIME)
+        bw = 64
+        pygame.draw.rect(scr, (12, 10, 18), (sx - bw // 2 - 2, int(sy) - 52, bw + 4, 12), border_radius=4)
+        pygame.draw.rect(scr, (120, 255, 160), (sx - bw // 2, int(sy) - 50, int(bw * k), 8), border_radius=3)
+        lab = "REVIVING..." if k > 0 else f"P{q.slot + 1} DOWN - stand here to revive"
+        self.text(lab, 18 if k > 0 else 17, (255, 150, 150) if k == 0 else (150, 255, 180), (sx, int(sy) - 66),
+                  center=True, outline=True)
+
+    def draw_offscreen(self, cx, cy):
+        """Duo: if a hero is off the screen (after a long blink), an arrow at the edge points to them."""
+        for q in self.players:
+            sx, sy = q.x - cx, q.y - cy
+            if 0 <= sx <= WIDTH and 0 <= sy <= HEIGHT:
+                continue
+            ex, ey = max(30, min(WIDTH - 30, sx)), max(30, min(HEIGHT - 30, sy))
+            ang = math.atan2(sy - ey, sx - ex) if (sx, sy) != (ex, ey) else 0
+            tip = (ex + math.cos(ang) * 16, ey + math.sin(ang) * 16)
+            pts = [tip, (ex + math.cos(ang + 2.5) * 14, ey + math.sin(ang + 2.5) * 14),
+                   (ex + math.cos(ang - 2.5) * 14, ey + math.sin(ang - 2.5) * 14)]
+            pygame.draw.polygon(self.screen, P_COLORS[q.slot], pts)
+            self.text(f"P{q.slot + 1}", 18, P_COLORS[q.slot], (int(ex - math.cos(ang) * 18), int(ey - math.sin(ang) * 18)),
+                      center=True, outline=True)
 
     def draw_heart(self, sx, sy, r, color):
         """A little heart centred on (sx, sy); r is roughly half its width."""
@@ -2816,8 +3219,10 @@ class Game:
             pygame.draw.circle(img, (235, 50, 75, int(220 * k)), (rad, rad), rad, 3)
             scr.blit(img, (int(s[0] - cx - rad), int(s[1] - cy - rad)))
             lights.append((s[0], s[1], s[2] * 1.4, (230, 40, 60), 0.4 * k, 0.5 * k))
-        pooled = p.buffs.get('pool', 0) > 0
-        if pooled:
+        p0 = p
+        for p in self.players:
+          pooled = p.buffs.get('pool', 0) > 0
+          if pooled:
             left = p.buffs['pool']
             rad = int(POOL_RADIUS * min(1.0, (POOL_TIME - left) * 6 + 0.3, left * 5 + 0.2))
             img = pygame.Surface((rad * 2, rad * 2), pygame.SRCALPHA)
@@ -2831,9 +3236,10 @@ class Game:
                                    2 + int(2 * abs(math.sin(t * 5 + i))), 1)
             scr.blit(img, (int(p.x - cx - rad), int(p.y - cy - rad)))
             lights.append((p.x, p.y, POOL_RADIUS * 1.6, (230, 40, 60), 0.4, 0.5))
+        p = p0
 
         # --- shadows, then everything standing on the floor sorted by depth
-        things = self.items + self.enemies + self.minions + ([] if pooled else [p])
+        things = self.items + self.enemies + self.minions + [q for q in self.players if q.buffs.get('pool', 0) <= 0]
         things.sort(key=lambda o: o.y)
         for o in things:
             sx, sy = int(o.x - cx), int(o.y - cy)
@@ -2846,10 +3252,12 @@ class Game:
             sh = sp.shadow(w, w * 0.45)
             fy = sy + (6 if isinstance(o, Item) else o.h / 2 + 2)
             scr.blit(sh, (int(sx - sh.get_width() / 2), int(fy - sh.get_height() / 2)))
-        for tr in self.trail:                                                # dash after-images
+        for p in self.players:
+          self.switch_to(p)
+          for tr in self.trail:                                              # dash after-images
             img = sp.player[(p.cls, tr[2], 0)]
             self.blit_feet(img, tr[0] - cx, tr[1] - cy + p.h / 2 + 2, sp.foot[('p', p.cls)], int(130 * tr[3] / 0.22))
-        for sh in self.shadows():                                            # the Shadow Ninja's shadows
+          for sh in self.shadows():                                          # the Shadow Ninja's shadows
             if not (sh['t'] > 1.0 or int(t * 12) % 2):                       # (they flicker just before they fade)
                 continue
             g = sh['e']
@@ -2862,17 +3270,27 @@ class Game:
             ring = (230, 60, 80) if sh['ult'] else (150, 110, 235)
             pygame.draw.ellipse(scr, ring, (int(g.x - cx) - 17, int(g.y - cy + p.h / 2) - 5, 34, 14), 2)
             lights.append((g.x, g.y, 110, ring, 0.35, 0.15))
+        self.switch_to(p0)
+        p = p0
         for o in things:
             sx, sy = int(o.x - cx), int(o.y - cy)
             if sx < -90 or sx > WIDTH + 90 or sy < -90 or sy > HEIGHT + 90:
                 continue
-            if o is p:
-                if p.invuln > 0 and int(t * 20) % 2 == 0 and p.dash_t <= 0 and p.launch_t <= 0:
+            if isinstance(o, Player):
+                q = o
+                if self.duo:                                                 # Duo: a coloured ring under each hero
+                    pygame.draw.ellipse(scr, P_COLORS[q.slot], (sx - 19, int(sy + q.h / 2) - 6, 38, 16), 2)
+                if q.downed:                                                 # Duo: lying down, waiting for help
+                    self.draw_downed(q, sx, sy)
                     continue
-                img = sp.player[(p.cls, p.dir_name, int(p.anim * 8) % 2 if p.moving else 0)]
-                bob = int(1.6 * math.sin(p.anim * 16)) if p.moving else int(1.2 * math.sin(t * 2.5))
-                self.blit_feet(img, sx, sy + p.h / 2 + 2 + bob * 0.5, sp.foot[('p', p.cls)])
-                if p.buffs.get('shield', 0) > 0:
+                if q.invuln > 0 and int(t * 20) % 2 == 0 and q.dash_t <= 0 and q.launch_t <= 0:
+                    continue
+                img = sp.player[(q.cls, q.dir_name, int(q.anim * 8) % 2 if q.moving else 0)]
+                bob = int(1.6 * math.sin(q.anim * 16)) if q.moving else int(1.2 * math.sin(t * 2.5))
+                self.blit_feet(img, sx, sy + q.h / 2 + 2 + bob * 0.5, sp.foot[('p', q.cls)])
+                if self.duo:
+                    self.text(f"P{q.slot + 1}", 18, P_COLORS[q.slot], (sx, sy - 40), center=True, outline=True)
+                if q.buffs.get('shield', 0) > 0:
                     bub = pygame.Surface((84, 84), pygame.SRCALPHA)
                     pygame.draw.circle(bub, (90, 160, 255, 60), (42, 42), 38)
                     pygame.draw.circle(bub, (170, 215, 255, 210), (42, 42), 38, 3)
@@ -2898,9 +3316,11 @@ class Game:
                     self.add_glow(sx, sy, 46, (90, 255, 160), 0.6)
                     lights.append((o.x, o.y, 70, (90, 255, 160), 0.2, 0.25))
 
-        # --- attack effects
-        c = CLASSES[p.cls]
-        if p.swing > 0 and c['atk'] == 'melee':
+        # --- attack effects (each hero's)
+        for p in self.players:
+          self.switch_to(p)
+          c = CLASSES[p.cls]
+          if p.swing > 0 and c['atk'] == 'melee' and not p.downed:
             ang = math.degrees(math.atan2(-p.face.y, p.face.x))
             img = sp.slash(ang).copy()
             reach = c['reach'] * self.blade_reach()
@@ -2908,7 +3328,7 @@ class Game:
                 img = pygame.transform.smoothscale(img, (int(img.get_width() * 1.4), int(img.get_height() * 1.4)))
             img.set_alpha(int(255 * p.swing / 0.16))
             scr.blit(img, img.get_rect(center=(int(p.x + p.face.x * reach - cx), int(p.y + p.face.y * reach - cy))))
-        if self.blade_on():                                                  # the Swordsman's glowing, extended blade
+          if self.blade_on() and not p.downed:                               # the Swordsman's glowing, extended blade
             left = p.buffs['greatblade']
             if left > 1.5 or int(t * 12) % 2:                                # flickers just before it runs out
                 bx, by = p.x - cx + p.face.x * 12, p.y - cy - 6 + p.face.y * 12
@@ -2918,12 +3338,21 @@ class Game:
                 self.add_glow(ex, ey, 40, (150, 235, 255), 1.0)
             self.add_glow(p.x - cx, p.y - cy, 70, (120, 220, 255), 0.45)
             lights.append((p.x, p.y, 150, (150, 235, 255), 0.3, 0.3))
-        for dr in self.drops:                                                # blood flying back to the Vampire Lord
+          for dr in self.drops:                                              # blood flying back to the Vampire Lord
             if dr[2] <= 0:
                 sx, sy = int(dr[0] - cx), int(dr[1] - cy)
                 pygame.draw.circle(scr, (130, 5, 25), (sx, sy), 5)
                 pygame.draw.circle(scr, (240, 45, 75), (sx, sy), 3)
                 self.add_glow(sx, sy, 22, (235, 40, 70), 0.8)
+          if p.spin > 0 and not p.downed:
+            for k in range(4):
+                a = t * 18 + k * math.pi / 2
+                img = sp.slash(-math.degrees(a)).copy()
+                img.set_alpha(int(255 * p.spin / 0.45))
+                scr.blit(img, img.get_rect(center=(int(p.x - cx + math.cos(a) * 54), int(p.y - cy + math.sin(a) * 54))))
+            self.add_glow(p.x - cx, p.y - cy, 90, (150, 190, 255), 0.5)
+        self.switch_to(p0)
+        p = p0
         for s in self.sweeps:                                                # sword arcs
             k = s[5] / s[6]
             sx, sy = s[0] - cx, s[1] - cy
@@ -2933,13 +3362,6 @@ class Game:
                         sy + math.sin(s[2] - s[4] + 2 * s[4] * i / n) * rr) for i in range(n + 1)]
                 pygame.draw.lines(scr, tuple(int(v * (0.4 + 0.6 * k)) for v in col), False, pts, wd)
             pygame.draw.lines(gl, tuple(int(v * k) for v in s[7]), False, [(x / 4, y / 4) for x, y in pts], 2)
-        if p.spin > 0:
-            for k in range(4):
-                a = t * 18 + k * math.pi / 2
-                img = sp.slash(-math.degrees(a)).copy()
-                img.set_alpha(int(255 * p.spin / 0.45))
-                scr.blit(img, img.get_rect(center=(int(p.x - cx + math.cos(a) * 54), int(p.y - cy + math.sin(a) * 54))))
-            self.add_glow(p.x - cx, p.y - cy, 90, (150, 190, 255), 0.5)
         for r in self.rings:
             k = r[3] / r[4]
             rad = int(r[2] * (k ** 0.55))
@@ -2964,7 +3386,8 @@ class Game:
             pygame.draw.circle(scr, pr.color, (sx, sy), pr.radius)
             pygame.draw.circle(scr, (255, 255, 255), (sx, sy), max(1, pr.radius - 3))
             self.add_glow(sx, sy, 38, pr.color, 1.0)
-        for b in self.bolts:
+        bolts = [b for q in self.players for b in (self.bolts if q is p0 else q.ctx['bolts'])]
+        for b in bolts:
             if b.wait > 0:                                                   # not thrown yet
                 continue
             sx, sy = int(b.x - cx), int(b.y - cy)
@@ -3032,7 +3455,11 @@ class Game:
                 pygame.draw.circle(scr, (255, 255, 230), (sx, sy), max(1, rad - 3))
                 self.add_glow(sx, sy, 60 if b.kind == 'fire' else 40, b.color, 1.1)
                 lights.append((b.x, b.y, 110 if b.kind == 'fire' else 70, b.color, 0.6, 0.55))
-        for i, (fx, fy) in enumerate(self.flower_spots()):                   # Ghala's Flower Ring
+        spots = []
+        for q in self.players:
+            with self.as_player(q):
+                spots += self.flower_spots()
+        for i, (fx, fy) in enumerate(spots):                                 # Ghala's Flower Ring
             sx, sy = int(fx - cx), int(fy - cy)
             spin = -t * 5 + i
             for j in range(5):
@@ -3045,8 +3472,9 @@ class Game:
             if random.random() < 0.25 * self.fx:
                 self.particles.append(Particle(fx, fy, random.uniform(-25, 25), random.uniform(-25, 25),
                                                0.4, (255, 190, 225), 3, glow=True))
-        if p.buffs.get('flowers', 0) > 0:
-            lights.append((p.x, p.y, 150, (255, 150, 200), 0.3, 0.35))
+        for q in self.players:
+            if q.buffs.get('flowers', 0) > 0:
+                lights.append((q.x, q.y, 150, (255, 150, 200), 0.3, 0.35))
         for pa in self.particles:
             sx, sy = int(pa.x - cx), int(pa.y - cy)
             k = max(0.0, pa.life / pa.max_life)
@@ -3066,12 +3494,14 @@ class Game:
         ov = self.overlay
         ov.fill((*pal['ambient'], pal['dark'] - 14))
         glow = 340 + 5 * math.sin(t * 9)
-        lights.append((p.x, p.y, glow, (255, 232, 200), 1.0, 0.1))
-        if self.levelup_t > 0:
-            k = self.levelup_t / 1.3
-            lights.append((p.x, p.y, 220, (255, 225, 110), 0.8 * k, 0.9 * k))
-            bx = int((p.x - cx) / 4)
-            pygame.draw.rect(gl, (int(255 * k), int(220 * k), int(110 * k)), (bx - 3, 0, 6, int((p.y - cy) / 4)))
+        for q in self.players:                                               # each hero carries a light
+            lights.append((q.x, q.y, glow if not q.downed else glow * 0.6, (255, 232, 200), 1.0, 0.1))
+            lu = self.levelup_t if q is p0 else q.ctx['levelup_t']
+            if lu > 0:
+                k = lu / 1.3
+                lights.append((q.x, q.y, 220, (255, 225, 110), 0.8 * k, 0.9 * k))
+                bx = int((q.x - cx) / 4)
+                pygame.draw.rect(gl, (int(255 * k), int(220 * k), int(110 * k)), (bx - 3, 0, 6, int((q.y - cy) / 4)))
         for (wx, wy, r, col, sub, addi) in lights:
             sx, sy = int(wx - cx), int(wy - cy)
             if sx < -r or sx > WIDTH + r or sy < -r or sy > HEIGHT + r:
@@ -3095,16 +3525,23 @@ class Game:
             size = int(base * (1.0 + 0.5 * max(0.0, 1 - age / 0.14)))
             self.text(ft.text, size, ft.color, (int(ft.x - cx), int(ft.y - cy)), center=True, outline=True,
                       alpha=255 if ft.life > 0.3 else int(255 * ft.life / 0.3))
-        if self.stairs and math.hypot(p.x - self.stairs[0], p.y - self.stairs[1]) < 40:
+        for p in self.heroes():
+          if self.stairs and math.hypot(p.x - self.stairs[0], p.y - self.stairs[1]) < 40:
+            self.switch_to(p)                                                # (shows THIS hero's key)
             if self.boss_alive():
                 self.text("Defeat the boss to unlock the stairs", 28, (255, 130, 120),
                           (int(p.x - cx), int(p.y - cy) - 56), center=True, outline=True)
             else:
                 self.draw_inline(["Press ", ('action', 'interact'), " to go down the stairs"],
                                  int(p.x - cx), int(p.y - cy) - 56, 28, (255, 240, 150))
+        self.switch_to(p0)
+        p = p0
+        if self.duo:                                                         # Duo: arrows to a hero who is off-screen
+            self.draw_offscreen(cx, cy)
 
         scr.blit(self.vignette, (0, 0))
-        danger = max(p.hurt_flash * 1.6, (0.35 + 0.25 * math.sin(t * 6)) if p.hp < p.max_hp * 0.3 else 0)
+        danger = max(max(q.hurt_flash * 1.6, (0.35 + 0.25 * math.sin(t * 6)) if q.hp < q.max_hp * 0.3 else 0)
+                     for q in (self.heroes() or [p]))
         if danger > 0:
             self.vignette_red.set_alpha(int(255 * min(1.0, danger)))
             scr.blit(self.vignette_red, (0, 0))
@@ -3251,38 +3688,17 @@ class Game:
         self.screen.blit(s, (x, y))
 
     def draw_hud(self):
-        p, scr = self.player, self.screen
+        p0, scr = self.player, self.screen
+        for p in self.players:                                     # each hero's panel + ability bar
+            with self.as_player(p):
+                dx = 0 if p.slot == 0 else WIDTH - 374 - 14
+                self.draw_hero_panel(p, dx)
+                cx = WIDTH // 2 if not self.duo else (WIDTH * 0.27 if p.slot == 0 else WIDTH * 0.73)
+                self.draw_ability_bar(p, cx)
+                ax = 14 if p.slot == 0 else WIDTH - 14 - 24 - 64 * 3
+                self.draw_allies(p, ax, 0 if not self.duo else 96)
+        p = p0
         c = CLASSES[p.cls]
-        # ---- portrait + bars (top-left)
-        self.panel((14, 14, 360, 120))
-        pc = (70, 72)
-        pygame.draw.circle(scr, (22, 17, 32), pc, 42)
-        img = self.sprites.player[(p.cls, 'down', 0)]
-        scr.blit(img, (pc[0] - img.get_width() // 2, pc[1] - img.get_height() // 2 + 6))
-        pygame.draw.circle(scr, c['color'], pc, 42, 4)
-        pygame.draw.circle(scr, (255, 255, 255), pc, 45, 1)
-        pygame.draw.circle(scr, (22, 17, 32), (104, 108), 17)
-        pygame.draw.circle(scr, (230, 190, 80), (104, 108), 17, 3)
-        self.text(str(p.level), 26, (255, 240, 190), (104, 108), center=True)
-        self.text(c['title'], 26, c['color'], (130, 20), outline=False)
-        self.bar(130, 46, 232, 24, p.hp / p.max_hp, (236, 90, 100), (190, 30, 48), trail=self.hp_trail / p.max_hp)
-        self.text(f"{p.hp} / {p.max_hp}", 22, (255, 255, 255), (246, 58), center=True)
-        self.bar(130, 78, 232, 10, p.xp / p.xp_next, (170, 200, 255), (90, 120, 230))
-        self.text(f"XP {p.xp}/{p.xp_next}", 18, (190, 205, 240), (130, 91), shadow=True)
-        scr.blit(self.ui['coin'], (230, 92))
-        self.text(str(p.gold), 22, (255, 220, 100), (258, 96))
-        for i in range(IT.MAX_SLOTS):                              # the shop items you carry
-            r = pygame.Rect(18 + i * 44, 142, 38, 38)
-            if i < len(p.items):
-                scr.blit(self.item_icon(p.items[i], 38), r)
-                power = IT.ITEMS[p.items[i]]['power']
-                wait = {'guard': p.guard_cd / IT.MYTHIC_GUARD_CD, 'echo': p.echo_cd / IT.MYTHIC_ECHO_CD}.get(power, 0)
-                if wait > 0:                                       # recharging: a dark cover that shrinks
-                    self.dim_rect(r.x, r.y, 38, int(38 * min(1.0, wait)), 150)
-            else:
-                self.dim_rect(r.x, r.y, 38, 38, 90)
-                pygame.draw.rect(scr, (90, 84, 104), r, 2, border_radius=6)
-
         # ---- floor title (top-centre)
         self.text(f"FLOOR {self.floor}", 34, (245, 235, 210), (WIDTH // 2, 24), center=True, outline=True)
         self.text(floor_name(self.floor), 22, (205, 190, 150), (WIDTH // 2, 50), center=True)
@@ -3290,9 +3706,10 @@ class Game:
         pygame.draw.line(scr, (176, 140, 78), (WIDTH // 2 + 20, 64), (WIDTH // 2 + 130, 64), 2)
         pygame.draw.polygon(scr, (230, 190, 80), [(WIDTH // 2, 59), (WIDTH // 2 + 6, 64), (WIDTH // 2, 69), (WIDTH // 2 - 6, 64)])
 
+        my = 22 if not self.duo else 200
         # ---- minimap (top-right)
         mw, mh = MAP_W * MINIMAP_SCALE, MAP_H * MINIMAP_SCALE
-        mx, my = WIDTH - mw - 28, 22
+        mx, my = WIDTH - mw - 28, my
         self.panel((mx - 8, my - 8, mw + 16, mh + 16), alpha=200)
         scr.blit(self.mini, (mx, my))
         ms = MINIMAP_SCALE
@@ -3301,7 +3718,9 @@ class Game:
         for e in self.enemies:
             if e.kind in BOSS_KINDS and self.explored[int(e.y // TILE)][int(e.x // TILE)]:
                 pygame.draw.circle(scr, (255, 70, 90), (mx + int(e.x // TILE) * ms + 2, my + int(e.y // TILE) * ms + 2), 4)
-        pygame.draw.rect(scr, (255, 255, 255), (mx + int(p.x // TILE) * ms - 1, my + int(p.y // TILE) * ms - 1, ms + 2, ms + 2))
+        for q in self.players:
+            col = P_COLORS[q.slot] if self.duo else (255, 255, 255)
+            pygame.draw.rect(scr, col, (mx + int(q.x // TILE) * ms - 1, my + int(q.y // TILE) * ms - 1, ms + 2, ms + 2))
 
         # ---- boss bar
         for e in self.enemies:
@@ -3312,10 +3731,81 @@ class Game:
                 self.text(BOSS_TIER[e.kind], 16, (255, 190, 120), (bx + 480, 92), right=True, outline=True)
                 self.bar(bx, 114, 480, 16, e.hp / e.max_hp, *BOSS_BAR[e.kind])
 
+        if self.show_stats:
+            with self.as_player(self.stats_who if self.stats_who in self.players else self.player):
+                self.draw_stats_panel()
+        if self.duo and self.run_time < 25 and self.state == 'playing':
+            for q in self.players:                                 # Duo: each player's keys, one line each
+                with self.as_player(q):
+                    self.draw_key_hint(q, WIDTH // 2, HEIGHT - 150 + 30 * q.slot, f"P{q.slot + 1}   ")
+        elif self.run_time < 16 and self.state == 'playing':
+            move = "Left Stick" if self.input.device == 'gamepad' else "WASD"
+            parts = [f"Move: {move}    "]
+            acts = [('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'), ('ability3', 'Skill 3')]
+            if len(p.ranks) > 3:
+                acts.append(('ultimate', 'Ult'))
+            for act, lab in acts + [('dash', 'Dash'), ('interact', 'Stairs')]:
+                parts += [('action', act), f" {lab}   "]
+            self.draw_inline(parts, WIDTH // 2, HEIGHT - 116, 24)
+
+        if self.banner_t > 0:
+            a = min(1.0, self.banner_t, (3.4 - self.banner_t) * 4)
+            if self.band_img is None:                  # painted once, then just faded in and out
+                self.band_img = pygame.Surface((WIDTH, 110), pygame.SRCALPHA)
+                for yy in range(110):
+                    k = 1 - abs(yy - 55) / 55
+                    pygame.draw.line(self.band_img, (0, 0, 0, int(165 * k)), (0, yy), (WIDTH, yy))
+            self.band_img.set_alpha(int(255 * a))
+            scr.blit(self.band_img, (0, 200))
+            self.text(self.banner_text, 64, (255, 232, 160), (WIDTH // 2, 238), center=True, outline=True, alpha=int(255 * a))
+            if self.banner_sub:
+                self.text(self.banner_sub, 32, (225, 215, 195), (WIDTH // 2, 280), center=True, outline=True, alpha=int(255 * a))
+
+    def draw_hero_panel(self, p, dx):
+        scr = self.screen
+        c = CLASSES[p.cls]
+        # ---- portrait + bars (top-left)
+        self.panel((14 + dx, 14, 360, 120), border=P_COLORS[p.slot] if self.duo else (176, 140, 78))
+        pc = (70 + dx, 72)
+        pygame.draw.circle(scr, (22, 17, 32), pc, 42)
+        img = self.sprites.player[(p.cls, 'down', 0)]
+        scr.blit(img, (pc[0] - img.get_width() // 2, pc[1] - img.get_height() // 2 + 6))
+        pygame.draw.circle(scr, c['color'], pc, 42, 4)
+        pygame.draw.circle(scr, (255, 255, 255), pc, 45, 1)
+        pygame.draw.circle(scr, (22, 17, 32), (104 + dx, 108), 17)
+        pygame.draw.circle(scr, (230, 190, 80), (104 + dx, 108), 17, 3)
+        self.text(str(p.level), 26, (255, 240, 190), (104 + dx, 108), center=True)
+        self.text(c['title'], 26, c['color'], (130 + dx, 20), outline=False)
+        self.bar(130 + dx, 46, 232, 24, p.hp / p.max_hp, (236, 90, 100), (190, 30, 48), trail=self.hp_trail / p.max_hp)
+        self.text(f"{p.hp} / {p.max_hp}", 22, (255, 255, 255), (246 + dx, 58), center=True)
+        self.bar(130 + dx, 78, 232, 10, p.xp / p.xp_next, (170, 200, 255), (90, 120, 230))
+        self.text(f"XP {p.xp}/{p.xp_next}", 18, (190, 205, 240), (130 + dx, 91), shadow=True)
+        scr.blit(self.ui['coin'], (230 + dx, 92))
+        self.text(str(p.gold), 22, (255, 220, 100), (258 + dx, 96))
+        for i in range(IT.MAX_SLOTS):                              # the shop items you carry
+            r = pygame.Rect(18 + dx + i * 44, 142, 38, 38)
+            if i < len(p.items):
+                scr.blit(self.item_icon(p.items[i], 38), r)
+                power = IT.ITEMS[p.items[i]]['power']
+                wait = {'guard': p.guard_cd / IT.MYTHIC_GUARD_CD, 'echo': p.echo_cd / IT.MYTHIC_ECHO_CD}.get(power, 0)
+                if wait > 0:                                       # recharging: a dark cover that shrinks
+                    self.dim_rect(r.x, r.y, 38, int(38 * min(1.0, wait)), 150)
+            else:
+                self.dim_rect(r.x, r.y, 38, 38, 90)
+                pygame.draw.rect(scr, (90, 84, 104), r, 2, border_radius=6)
+
+        if self.duo:                                               # 'P1' / 'P2' tag (and DOWN!)
+            self.text(f"P{p.slot + 1}", 22, P_COLORS[p.slot], (338 + dx, 20), center=True, outline=True)
+            if p.downed:
+                self.dim_rect(14 + dx, 14, 360, 120, 150)
+                self.text("DOWN!", 44, (255, 110, 110), (194 + dx, 74), center=True, outline=True)
+
+    def draw_ability_bar(self, p, cx):
+        scr = self.screen
         # ---- ability bar (bottom-centre)
         names = slot_names(p.cls)
         nslots = len(names)
-        x0 = WIDTH // 2 - 154 - (38 if nslots > 3 else 0)
+        x0 = int(cx) - 154 - (38 if nslots > 3 else 0)
         y0 = HEIGHT - 92
         self.panel((x0 - 16, y0 - 12, 340 + 76 * (nslots - 3), 92), alpha=190)
         for i in range(nslots):
@@ -3356,44 +3846,35 @@ class Game:
         pygame.draw.line(scr, (110, 96, 70), (sx - 10, y0 + 6), (sx - 10, y0 + 60), 2)
         self.draw_slot(sx, y0, 66, self.ui['dash_big'], (150, 200, 255), p.dash_cd, p.dash_cd_base, "dash")
 
+
+    def draw_allies(self, p, ax, ay):
+        scr = self.screen
         # ---- allies (bottom-left)
-        if self.minions:
+        mine = [m for m in self.minions if self.mine(m)]
+        if mine:
             kinds = {}
-            for m in self.minions:
+            for m in mine:
                 kinds[m.kind] = kinds.get(m.kind, 0) + 1
             wd = 24 + 64 * len(kinds)
-            self.panel((14, HEIGHT - 82, wd, 66), alpha=190, border=(110, 200, 150))
+            self.panel((ax, HEIGHT - 82 - ay, wd, 66), alpha=190, border=(110, 200, 150))
             for i, (k, n) in enumerate(kinds.items()):
                 img = self.sprites.minion[k][0]
                 s = pygame.transform.smoothscale(img, (int(img.get_width() * 0.62), int(img.get_height() * 0.62)))
-                scr.blit(s, (30 + i * 64 - s.get_width() // 2 + 18, HEIGHT - 76))
-                self.text(f"x{n}", 22, (190, 255, 210), (30 + i * 64 + 26, HEIGHT - 44), outline=True)
-            self.text("ALLIES", 16, (150, 220, 180), (24, HEIGHT - 94))
+                scr.blit(s, (ax + 16 + i * 64 - s.get_width() // 2 + 18, HEIGHT - 76 - ay))
+                self.text(f"x{n}", 22, (190, 255, 210), (ax + 16 + i * 64 + 26, HEIGHT - 44 - ay), outline=True)
+            self.text("ALLIES", 16, (150, 220, 180), (ax + 10, HEIGHT - 94 - ay))
 
-        if self.show_stats:
-            self.draw_stats_panel()
-        if self.run_time < 16 and self.state == 'playing':
-            move = "Left Stick" if self.input.device == 'gamepad' else "WASD"
-            parts = [f"Move: {move}    "]
-            acts = [('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'), ('ability3', 'Skill 3')]
-            if len(p.ranks) > 3:
-                acts.append(('ultimate', 'Ult'))
-            for act, lab in acts + [('dash', 'Dash'), ('interact', 'Stairs')]:
-                parts += [('action', act), f" {lab}   "]
-            self.draw_inline(parts, WIDTH // 2, HEIGHT - 116, 24)
 
-        if self.banner_t > 0:
-            a = min(1.0, self.banner_t, (3.4 - self.banner_t) * 4)
-            if self.band_img is None:                  # painted once, then just faded in and out
-                self.band_img = pygame.Surface((WIDTH, 110), pygame.SRCALPHA)
-                for yy in range(110):
-                    k = 1 - abs(yy - 55) / 55
-                    pygame.draw.line(self.band_img, (0, 0, 0, int(165 * k)), (0, yy), (WIDTH, yy))
-            self.band_img.set_alpha(int(255 * a))
-            scr.blit(self.band_img, (0, 200))
-            self.text(self.banner_text, 64, (255, 232, 160), (WIDTH // 2, 238), center=True, outline=True, alpha=int(255 * a))
-            if self.banner_sub:
-                self.text(self.banner_sub, 32, (225, 215, 195), (WIDTH // 2, 280), center=True, outline=True, alpha=int(255 * a))
+    def draw_key_hint(self, p, cx, cy, lead=""):
+        move = "Left Stick" if self.input.device == 'gamepad' and self.input.connected else (
+            "Arrows" if self.duo and p.slot == 1 else "WASD")
+        parts = [f"{lead}Move: {move}    "]
+        acts = [('attack', 'Attack'), ('ability1', 'Skill 1'), ('ability2', 'Skill 2'), ('ability3', 'Skill 3')]
+        if len(p.ranks) > 3:
+            acts.append(('ultimate', 'Ult'))
+        for act, lab in acts + [('dash', 'Dash'), ('interact', 'Stairs')]:
+            parts += [('action', act), f" {lab}   "]
+        self.draw_inline(parts, cx, cy, 24)
 
     def draw_stats_panel(self):
         p = self.player
@@ -3462,8 +3943,9 @@ class Game:
         self.text("BONE KING", 168, (255, 214, 90), (WIDTH // 2, 190 + bob), center=True, outline=True)
         self.text(f"A DUNGEON RPG  -  20 FLOORS  -  {len(CLASS_ORDER)} HEROES", 30, (190, 190, 220), (WIDTH // 2, 284), center=True, outline=True)
         items = self.title_items()
-        self.draw_menu(items, WIDTH // 2, 322)
-        menu_bottom = 322 + (len(items) - 1) * 62 + 52   # draw_menu's default row height(52) + gap(10)
+        rh, gap = (52, 10) if len(items) <= 4 else (46, 7)      # (5 rows: a bit tighter so the hint still fits)
+        self.draw_menu(items, WIDTH // 2, 316, h=rh, gap=gap)
+        menu_bottom = 316 + (len(items) - 1) * (rh + gap) + rh
         how = "D-Pad / Left Stick + " if self.input.device == 'gamepad' else "Arrows / mouse + "
         self.draw_inline([how, ('nav', 'confirm'), " to choose"], WIDTH // 2, menu_bottom + 26, 24)
         self.draw_pad_status(18, 16)
@@ -3476,7 +3958,15 @@ class Game:
         scr = self.screen
         self.lit_backdrop([(WIDTH // 2, 300, 700, 0.55)])
         self.dim((0, 0, 10), 70)
-        self.text("CHOOSE YOUR HERO", 66, (255, 214, 90), (WIDTH // 2, 48), center=True, outline=True)
+        if self.sel_duo:
+            who = 0 if self.pick1 is None else 1
+            self.text(f"PLAYER {who + 1}: CHOOSE YOUR HERO", 54, P_COLORS[who], (WIDTH // 2, 38), center=True, outline=True)
+            seat = f"P1: {self.seat_label(0)}      P2: {self.seat_label(1)}"
+            if pad_count() == 1:
+                seat += "      (Tab / L1 / R1: swap who has the controller)"
+            self.text(seat, 19, (215, 210, 230), (WIDTH // 2, 69), center=True, outline=True)
+        else:
+            self.text("CHOOSE YOUR HERO", 66, (255, 214, 90), (WIDTH // 2, 48), center=True, outline=True)
         maxes = dict(hp=80, dmg=12, speed=205)
         for i, (key, r0) in enumerate(zip(CLASS_ORDER, self.select_rects())):
             c = CLASSES[key]
@@ -3485,6 +3975,9 @@ class Game:
             self.panel(r, alpha=235 if sel else 205, border=c['color'] if sel else (100, 92, 116), radius=12,
                        glow=c['color'] if sel else None)
             self.text(c['name'], 30 if len(c['name']) <= 11 else 24, c['color'], (r.centerx, r.y + 26), center=True, outline=True)
+            if self.sel_duo and self.pick1 == key:                          # Player 1's choice
+                pygame.draw.circle(scr, P_COLORS[0], (r.right - 20, r.y + 76), 16)
+                self.text("P1", 18, (30, 20, 10), (r.right - 20, r.y + 76), center=True)
             self.text(c['role'], 20, (180, 180, 205), (r.centerx, r.y + 50), center=True)
             if sel:
                 self.add_glow_screen(r.centerx, r.y + 118, 80, c['color'], 0.5)
@@ -3512,7 +4005,8 @@ class Game:
             x = 52 + i * (300 if four else 400)
             scr.blit(self.icons[name], (x, 520))
             self.text(ab['name'], 28 if four else 32, ab['color'], (x + 72, 520), outline=True)
-            key_lab = (self.input.labels(slot_key(i)) or ['-'])[0]
+            li = self.in2 if (self.sel_duo and self.pick1 is not None) else self.input
+            key_lab = (li.labels(slot_key(i)) or ['-'])[0]
             info = (f"Lv {unlock_level(i)} - {key_lab} - {ab['cd']}s" if four else
                     f"Unlocks at level {unlock_level(i)}  -  {key_lab}  -  {ab['cd']}s cooldown")
             self.text(info, 20, (175, 175, 200), (x + 72, 550))
@@ -3523,7 +4017,8 @@ class Game:
 
     # ------------------------------------------------------------ the main draw
     # ------------------------------------------------------------ the CONTROLS screen
-    TAB_NAMES = ["KEYBOARD", "PS5 CONTROLLER", "LAYOUT & SETUP"]
+    TAB_NAMES = ["KEYBOARD", "PS5 CONTROLLER", "LAYOUT & SETUP", "PLAYER 2 KEYS"]
+    TAB_DEVICE = {0: 'keyboard', 1: 'gamepad', 3: 'keyboard2'}
 
     def draw_ps5_diagram(self, cx, cy):
         """A picture of the DualSense with every button labelled by what it does in this game."""
@@ -3593,9 +4088,10 @@ class Game:
         self.text("CONTROLS", 60, (255, 214, 90), (WIDTH // 2, 40), center=True, outline=True)
         self.draw_pad_status(18, 16)
         # --- tabs
-        tw = 270
+        n_tabs = len(self.TAB_NAMES)
+        tw = 262
         for i, name in enumerate(self.TAB_NAMES):
-            r = pygame.Rect(WIDTH // 2 - tw * 3 // 2 - 10 + i * (tw + 10), 78, tw, 40)
+            r = pygame.Rect(WIDTH // 2 - (n_tabs * tw + (n_tabs - 1) * 10) // 2 + i * (tw + 10), 78, tw, 40)
             on = i == self.ctl_tab
             self.panel(r, alpha=240 if on else 190, border=(255, 214, 90) if on else (100, 94, 120), radius=10,
                        glow=(255, 214, 90) if on else None)
@@ -3604,7 +4100,7 @@ class Game:
         for side, act in ((-1, 'tab_prev'), (1, 'tab_next')):
             self.screen.blit(self.badge_surface('nav', 'L1' if side < 0 else 'R1', 22) if False else
                              self.text_img("<" if side < 0 else ">", 34, (200, 190, 150), True),
-                             (WIDTH // 2 + side * (tw * 3 // 2 + 40) - 8, 84))
+                             (WIDTH // 2 + side * ((n_tabs * tw + (n_tabs - 1) * 10) // 2 + 22) - 8, 84))
         panel = pygame.Rect(60, 124, WIDTH - 120, 548)
         self.panel(panel, alpha=232)
         if self.ctl_tab == 2:
@@ -3614,7 +4110,7 @@ class Game:
         # --- footer hint
         if inp.capture:
             cap = inp.capture
-            what = "a KEY" if cap['device'] == 'keyboard' else "a BUTTON on your controller"
+            what = {'keyboard': "a KEY", 'keyboard2': "PLAYER 2's KEY"}.get(cap['device'], "a BUTTON on your controller")
             ov = pygame.Rect(WIDTH // 2 - 330, 300, 660, 140)
             self.dim((0, 0, 0), 150)
             self.panel(ov, alpha=250, border=(255, 214, 90), glow=(255, 214, 90))
@@ -3632,7 +4128,10 @@ class Game:
         scr, inp = self.screen, self.input
         rows = self.ctl_rows()
         pad = self.ctl_tab == 1
-        device = 'gamepad' if pad else 'keyboard'
+        device = self.TAB_DEVICE.get(self.ctl_tab, 'keyboard')
+        if self.ctl_tab == 3:
+            self.text("Duo only. A key in this list belongs to Player 2 (Player 1's copy of it is ignored in Duo).",
+                      18, (190, 200, 230), (panel.centerx, panel.bottom - 22), center=True)
         n_bind = sum(1 for k, _ in rows if k == 'bind')
         rh = 28 if len(rows) > 14 else 34
         x0, y0 = panel.x + 24, panel.y + 40
@@ -3652,7 +4151,7 @@ class Game:
                 self.text(ACTION_LABELS[key], 24, (255, 255, 255) if sel else (205, 205, 225), (x0 + 12, y + 4), outline=sel)
                 for col in (0, 1):
                     cell = pygame.Rect(x0 + 400 + col * 210, y + 2, 190, rh - 7)
-                    lst = inp.kb[key] if not pad else inp.pad[key]
+                    lst = inp.pad[key] if pad else (inp.kb2[key] if device == 'keyboard2' else inp.kb[key])
                     here = sel and self.ctl_col == col
                     waiting = inp.capture and inp.capture['action'] == key and inp.capture['slot'] == col and inp.capture['device'] == device
                     pygame.draw.rect(scr, (30, 26, 44) if not here else (84, 70, 40), cell, border_radius=6)
@@ -3743,7 +4242,10 @@ class Game:
         cells = self.shop_cells()
         self.shop_sel = min(self.shop_sel, len(cells) - 1)
         skind, skey, _ = cells[self.shop_sel]
-        self.text("SHOP", 52, (255, 214, 90), (WIDTH // 2, 44), center=True, outline=True)
+        self.text("SHOP" if not self.duo else f"PLAYER {self.player.slot + 1}'S SHOP", 52,
+                  (255, 214, 90) if not self.duo else P_COLORS[self.player.slot], (WIDTH // 2, 44), center=True, outline=True)
+        if self.shop_queue:
+            self.text(f"Player {self.shop_queue[0].slot + 1} shops next", 20, (200, 190, 160), (WIDTH // 2, 76), center=True)
         scr.blit(self.ui['coin'], (WIDTH - 200, 30))
         self.text(f"{p.gold} gold", 30, (255, 220, 100), (WIDTH - 166, 30))
         self.text("YOUR ITEMS", 20, (200, 190, 160), (42, 104))
@@ -3891,7 +4393,8 @@ class Game:
         elif st == 'music':
             self.draw_music()
         elif st == 'shop':
-            self.draw_shop()
+            with self.as_player(self.menu_owner()):
+                self.draw_shop()
         else:
             self.draw_world()                          # (paints the whole screen, so no need to clear it first)
             self.draw_hud()
@@ -3901,7 +4404,8 @@ class Game:
             p = self.player
             c = CLASSES[p.cls]
             if st == 'skill':
-                self.draw_skill()
+                with self.as_player(self.menu_owner()):
+                    self.draw_skill()
             elif st == 'paused':
                 self.dim((0, 0, 20), 175)
                 pause_items = self.pause_items()
@@ -3912,33 +4416,44 @@ class Game:
             elif st == 'dead':
                 self.dim((90, 0, 0), 190)
                 self.panel((WIDTH // 2 - 340, 170, 680, 340), alpha=235, border=(220, 70, 70))
-                self.text("YOU DIED", 130, (255, 80, 80), (WIDTH // 2, 250), center=True, outline=True)
-                self.text(f"{c['title']} fell on floor {self.floor} at level {p.level}", 36, (255, 255, 255), (WIDTH // 2, 340), center=True)
-                self.text(f"Monsters beaten: {p.kills}     Gold: {p.gold}     Time: {mins}:{secs:02d}", 30, (235, 205, 205), (WIDTH // 2, 385), center=True)
+                self.text("YOU DIED" if not self.duo else "YOU BOTH FELL", 130 if not self.duo else 100, (255, 80, 80),
+                          (WIDTH // 2, 250), center=True, outline=True)
+                if self.duo:
+                    a, b = self.players
+                    self.text(f"{CLASSES[a.cls]['name']} & {CLASSES[b.cls]['name']} fell on floor {self.floor} at level "
+                              f"{a.level}", 34, (255, 255, 255), (WIDTH // 2, 340), center=True)
+                    kills = a.kills + b.kills
+                else:
+                    self.text(f"{c['title']} fell on floor {self.floor} at level {p.level}", 36, (255, 255, 255), (WIDTH // 2, 340), center=True)
+                    kills = p.kills
+                self.text(f"Monsters beaten: {kills}     Gold: {p.gold}     Time: {mins}:{secs:02d}", 30, (235, 205, 205), (WIDTH // 2, 385), center=True)
                 self.draw_inline(["Press ", ('nav', 'confirm'), " to try again"], WIDTH // 2, 455, 40)
             elif st == 'victory':
                 self.dim((30, 20, 0), 190)
                 self.panel((WIDTH // 2 - 380, 150, 760, 380), alpha=235, border=(255, 210, 90))
                 self.text("VICTORY!", 150, (255, 222, 90), (WIDTH // 2, 235), center=True, outline=True)
-                self.text(f"{c['title']} defeated Malgor and saved the kingdom!", 36, (255, 255, 255), (WIDTH // 2, 335), center=True)
-                self.text(f"Level {p.level}     Monsters beaten: {p.kills}     Gold: {p.gold}     Time: {mins}:{secs:02d}", 30, (255, 238, 175), (WIDTH // 2, 385), center=True)
+                who = (f"{CLASSES[self.players[0].cls]['name']} & {CLASSES[self.players[1].cls]['name']}" if self.duo
+                       else c['title'])
+                kills = sum(q.kills for q in self.players)
+                self.text(f"{who} defeated Malgor and saved the kingdom!", 36 if not self.duo else 32, (255, 255, 255), (WIDTH // 2, 335), center=True)
+                self.text(f"Level {p.level}     Monsters beaten: {kills}     Gold: {p.gold}     Time: {mins}:{secs:02d}", 30, (255, 238, 175), (WIDTH // 2, 385), center=True)
                 self.draw_inline(["Press ", ('nav', 'confirm'), " to play again"], WIDTH // 2, 465, 44)
         self.draw_toasts()
 
     def step(self, dt, keys=None):
         """One tick of the game: read input, act on it, update the world. (Tests call this too.)"""
-        self.input.update(dt, keys)
+        self.in1.update(dt, keys)
+        if self.p2_live():
+            self.in2.update(dt, keys)
         self.process_input()
         self.update(dt)
 
     def run(self):
         while self.running:
             dt = min(self.clock.tick(self.frame_cap) / 1000.0, 0.05)
-            self.input.begin_frame()
+            self.begin_frame()
             for e in pygame.event.get():
-                if self.input.handle_event(e):          # eaten while you are choosing a new key/button
-                    continue
-                self.handle_event(e)
+                self.feed_event(e)
             self.step(dt)
             self.draw()
             if self.show_fps:

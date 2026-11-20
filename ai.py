@@ -95,7 +95,8 @@ class Brain:
         self.dt = 0.0
 
     # ------------------------------------------------------------------ every frame
-    def update(self, dt):
+    def update(self, dt, lead=True):
+        """`lead` is False for Duo's second brain (each hero has one): the shared jobs run only once."""
         g = self.game
         p = g.player
         self.t += dt
@@ -116,12 +117,13 @@ class Brain:
         self.windups = sum(1 for e in g.enemies if e.warn and e.kind in TOKEN_KINDS)
         self.circle_t -= dt
         for e in g.enemies:
-            if e.rest_t > 0:
+            if e.rest_t > 0 and lead:
                 e.rest_t -= dt
         if self.circle_t <= 0:
             self.circle_t = 0.25
             self.pick_attackers(0.25)
-        self.separate(dt)
+        if lead:
+            self.separate(dt)
 
     def pick_attackers(self, dt):
         """The closest few melee monsters may close in and hit you; the others circle around at a distance
@@ -131,6 +133,8 @@ class Brain:
         near = []
         for e in self.game.enemies:
             if e.kind not in PRESSER_KINDS or not e.awake:
+                continue
+            if getattr(e, 'tgt', p) is not p:       # (Duo: the other hero's brain looks after this one)
                 continue
             d = math.hypot(e.x - p.x, e.y - p.y)
             if d > CIRCLE_RANGE or (e.state == 'chase' and not e.sees):

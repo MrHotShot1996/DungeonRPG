@@ -37,6 +37,15 @@ DEFAULT_KB = {
     'ultimate': [pygame.K_r], 'dash': [pygame.K_LSHIFT, pygame.K_RSHIFT], 'interact': [pygame.K_e],
     'stats': [pygame.K_TAB], 'pause': [pygame.K_ESCAPE, pygame.K_p], 'mute': [pygame.K_m],
 }
+# PLAYER 2's keys in Duo (the right-hand side of the keyboard: arrows + the keys next to them, or the numpad)
+DEFAULT_KB2 = {
+    'move_up': [pygame.K_UP], 'move_down': [pygame.K_DOWN], 'move_left': [pygame.K_LEFT], 'move_right': [pygame.K_RIGHT],
+    'attack': [pygame.K_RCTRL, pygame.K_KP0], 'ability1': [pygame.K_COMMA, pygame.K_KP1],
+    'ability2': [pygame.K_PERIOD, pygame.K_KP2], 'ability3': [pygame.K_SLASH, pygame.K_KP3],
+    'ultimate': [pygame.K_SEMICOLON, pygame.K_KP4], 'dash': [pygame.K_RSHIFT, pygame.K_KP_ENTER],
+    'interact': [pygame.K_RETURN, pygame.K_KP5], 'stats': [pygame.K_QUOTE, pygame.K_KP6], 'pause': [pygame.K_BACKSPACE],
+    'mute': [],
+}
 # Controller names follow SDL: a=Cross, b=Circle, x=Square, y=Triangle, lt/rt = L2/R2, ...
 DEFAULT_PAD = {
     'move_up': ['dpup'], 'move_down': ['dpdown'], 'move_left': ['dpleft'], 'move_right': ['dpright'],
@@ -67,7 +76,7 @@ _REM = {getattr(pygame, n) for n in ('CONTROLLERDEVICEREMOVED', 'JOYDEVICEREMOVE
 
 _KEY_PRETTY = {'left shift': 'L-Shift', 'right shift': 'R-Shift', 'left ctrl': 'L-Ctrl', 'right ctrl': 'R-Ctrl',
                'left alt': 'L-Alt', 'right alt': 'R-Alt', 'return': 'Enter', 'escape': 'Esc', 'space': 'Space',
-               'backspace': 'Backspace', 'keypad enter': 'Enter', 'up': 'Up', 'down': 'Down', 'left': 'Left',
+               'backspace': 'Backspace', 'keypad enter': 'Num Enter', 'enter': 'Num Enter', 'up': 'Up', 'down': 'Down', 'left': 'Left',
                'right': 'Right', 'tab': 'Tab'}
 
 
@@ -78,6 +87,8 @@ def key_label(code):
         n = str(code)
     if n in _KEY_PRETTY:
         return _KEY_PRETTY[n]
+    if len(n) == 3 and n[0] == '[' and n[2] == ']':          # numpad keys: "[0]" -> "Num 0"
+        return 'Num ' + n[1]
     return n.upper() if len(n) <= 1 else n.title()
 
 
@@ -90,7 +101,8 @@ class PadBackend:
     """A thin layer over SDL's game-controller API. It gives every controller the SAME button names,
     so a PS5 DualSense works the same on Windows, Mac and Linux. (Falls back to the raw joystick API.)"""
 
-    def __init__(self):
+    def __init__(self, index=0):
+        self.index = index            # 0 = the first controller plugged in, 1 = the second (Duo's Player 2)
         self.ctrl = None
         self.joy = None
         self.name = ''
@@ -119,23 +131,26 @@ class PadBackend:
                     self.ctrl, self.name = None, ''
             except Exception:
                 self.ctrl, self.name = None, ''
-        if self.joy is not None and pygame.joystick.get_count() == 0:
+        if self.joy is not None and pygame.joystick.get_count() <= self.index:
             self.joy, self.name = None, ''
         if self.connected:
             return
         if self._sdlc is not None:
             try:
-                for i in range(self._sdlc.get_count()):
-                    if self._sdlc.is_controller(i):
-                        self.ctrl = self._sdlc.Controller(i)
-                        nm = getattr(self.ctrl, 'name', None) or self._sdlc.name_forindex(i) or 'Controller'
-                        self.name = nm.decode() if isinstance(nm, bytes) else str(nm)
-                        return
+                found = [i for i in range(self._sdlc.get_count()) if self._sdlc.is_controller(i)]
+                if len(found) > self.index:
+                    i = found[self.index]
+                    self.ctrl = self._sdlc.Controller(i)
+                    nm = getattr(self.ctrl, 'name', None) or self._sdlc.name_forindex(i) or 'Controller'
+                    self.name = nm.decode() if isinstance(nm, bytes) else str(nm)
+                    return
+                if found:
+                    return                    # (controllers exist, just not this many)
             except Exception:
                 self.ctrl = None
         try:
-            for i in range(pygame.joystick.get_count()):
-                j = pygame.joystick.Joystick(i)
+            if pygame.joystick.get_count() > self.index:
+                j = pygame.joystick.Joystick(self.index)
                 j.init()
                 self.joy, self.name = j, j.get_name()
                 return
@@ -197,14 +212,39 @@ class PadBackend:
             pass
 
 
+def pad_count():
+    """How many controllers are plugged in right now."""
+    try:
+        from pygame._sdl2 import controller as sdlc
+        sdlc.init()
+        n = sum(1 for i in range(sdlc.get_count()) if sdlc.is_controller(i))
+        if n:
+            return n
+    except Exception:
+        pass
+    try:
+        return pygame.joystick.get_count()
+    except Exception:
+        return 0
+
+
 # ====================================================================== the Input manager
 class Input:
-    def __init__(self, path=None, backend=None):
+    def __init__(self, path=None, backend=None, owner=None):
+        """`owner` is Player 1's Input when this one is Duo's PLAYER 2: it then uses Player 1's saved
+        Player-2 keys, controller layout and settings (one controls.json for both)."""
         self.path = path
         self.kb = {a: list(v) for a, v in DEFAULT_KB.items()}
+        self.kb2 = {a: list(v) for a, v in DEFAULT_KB2.items()}      # Duo: Player 2's keys (saved with ours)
         self.pad = {a: list(v) for a, v in DEFAULT_PAD.items()}
         self.settings = dict(DEFAULT_SETTINGS)
         self.load()
+        if owner is not None:
+            self.kb, self.pad, self.settings = owner.kb2, owner.pad, owner.settings
+        self.blocked = set()                # keys this player must ignore (Duo: the other player's keys)
+        self.pad_on = True                  # False = this player doesn't use a controller right now
+        self.who = ''                       # 'P1' / 'P2' in Duo (for the 'controller connected' notes)
+        self._nav_pad = []                  # menu moves that came from THIS player's controller
         self.backend = backend if backend is not None else PadBackend()
         self.device = 'keyboard'            # which one you touched last (used for on-screen button hints)
         self.axes = dict(lx=0.0, ly=0.0, rx=0.0, ry=0.0, lt=0.0, rt=0.0)
@@ -225,6 +265,9 @@ class Input:
             for a, v in data.get('keyboard', {}).items():
                 if a in self.kb and isinstance(v, list):
                     self.kb[a] = [int(k) for k in v][:2]
+            for a, v in data.get('keyboard2', {}).items():
+                if a in self.kb2 and isinstance(v, list):
+                    self.kb2[a] = [int(k) for k in v][:2]
             for a, v in data.get('gamepad', {}).items():
                 if a in self.pad and isinstance(v, list):
                     self.pad[a] = [str(k) for k in v][:2]
@@ -239,13 +282,17 @@ class Input:
             return
         try:
             with open(self.path, 'w') as f:
-                json.dump({'keyboard': self.kb, 'gamepad': self.pad, 'settings': self.settings}, f, indent=1)
+                json.dump({'keyboard': self.kb, 'keyboard2': self.kb2, 'gamepad': self.pad, 'settings': self.settings},
+                          f, indent=1)
         except Exception:
             pass
 
     def reset(self, device):
         if device == 'keyboard':
             self.kb = {a: list(v) for a, v in DEFAULT_KB.items()}
+        elif device == 'keyboard2':
+            self.kb2.clear()
+            self.kb2.update({a: list(v) for a, v in DEFAULT_KB2.items()})
         else:
             self.pad = {a: list(v) for a, v in DEFAULT_PAD.items()}
             self.settings = dict(DEFAULT_SETTINGS)
@@ -253,7 +300,7 @@ class Input:
 
     # ---------------------------------------------------------------- asking "what does the player want?"
     def begin_frame(self):
-        self._pressed, self._nav = set(), []
+        self._pressed, self._nav, self._nav_pad = set(), [], []
 
     def pressed(self, action):
         return action in self._pressed
@@ -266,7 +313,7 @@ class Input:
 
     @property
     def connected(self):
-        return self.backend.connected
+        return self.pad_on and self.backend.connected
 
     @property
     def pad_name(self):
@@ -315,6 +362,8 @@ class Input:
         device = device or self.device
         if device == 'keyboard':
             return [key_label(k) for k in self.kb.get(action, [])]
+        if device == 'keyboard2':
+            return [key_label(k) for k in self.kb2.get(action, [])]
         return [pad_label(c) for c in self.pad.get(action, [])]
 
     def pad_primary(self, action):
@@ -338,9 +387,12 @@ class Input:
         if note:
             self.messages.append((note, (220, 220, 230)))
 
+    def _table(self, device):
+        return {'keyboard': self.kb, 'keyboard2': self.kb2}.get(device, self.pad)
+
     def _assign(self, device, action, slot, code):
-        table = self.kb if device == 'keyboard' else self.pad
-        shown = key_label if device == 'keyboard' else pad_label
+        table = self._table(device)
+        shown = pad_label if device == 'gamepad' else key_label
         moved = None
         for a, lst in table.items():                 # a key/button can only do ONE thing
             if a != action and code in lst:
@@ -360,7 +412,7 @@ class Input:
         self.messages.append((msg, (170, 255, 190)))
 
     def _clear_slot(self, device, action, slot):
-        table = self.kb if device == 'keyboard' else self.pad
+        table = self._table(device)
         if slot < len(table[action]):
             del table[action][slot]
         self.capture = None
@@ -379,12 +431,13 @@ class Input:
                     self.cancel_capture("Rebinding cancelled")
                 elif e.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
                     self._clear_slot(cap['device'], cap['action'], cap['slot'])
-                elif cap['device'] == 'keyboard' and e.key != pygame.K_F11:
-                    self._assign('keyboard', cap['action'], cap['slot'], e.key)
+                elif cap['device'] in ('keyboard', 'keyboard2') and e.key != pygame.K_F11:
+                    self._assign(cap['device'], cap['action'], cap['slot'], e.key)
                 return True
-            for act, keys in self.kb.items():
-                if e.key in keys:
-                    self._pressed.add(act)
+            if e.key not in self.blocked:
+                for act, keys in self.kb.items():
+                    if e.key in keys:
+                        self._pressed.add(act)
             n = KEY_NAV.get(e.key)
             if n:
                 self._nav.append(n)
@@ -399,10 +452,11 @@ class Input:
         c = self.backend.connected
         if c != self._was_connected:
             self._was_connected = c
+            who = self.who + " " if self.who else ""
             if c:
-                self.messages.append((f"Controller connected: {self.backend.name}", (150, 255, 190)))
+                self.messages.append((f"{who}Controller connected: {self.backend.name}", (150, 255, 190)))
             else:
-                self.messages.append(("Controller disconnected", (255, 170, 150)))
+                self.messages.append((f"{who}Controller disconnected", (255, 170, 150)))
                 self.device = 'keyboard'
 
     # ---------------------------------------------------------------- every frame
@@ -410,11 +464,14 @@ class Input:
         keys = keys if keys is not None else pygame.key.get_pressed()
         held = set()
         for act, ks in self.kb.items():
-            if any(keys[k] for k in ks):
+            if any(keys[k] for k in ks if k not in self.blocked):
                 held.add(act)
 
         prev = self._pad_now
-        buttons, axes = self.backend.poll()
+        if self.pad_on:
+            buttons, axes = self.backend.poll()
+        else:
+            buttons, axes = set(), dict(lx=0.0, ly=0.0, rx=0.0, ry=0.0, lt=0.0, rt=0.0)
         for name in ('lt', 'rt'):                                    # triggers count as buttons
             v = axes[name]
             if v > 0.55 or (name in prev and v > 0.3):
@@ -443,6 +500,7 @@ class Input:
                 n = PAD_NAV.get(name)
                 if n:
                     self._nav.append(n)
+                    self._nav_pad.append(n)
             # D-Pad / left stick moving through menus (with key-repeat when held)
             dirs = set()
             if 'dpup' in buttons or axes['ly'] < -0.55: dirs.add('up')
@@ -454,11 +512,13 @@ class Input:
                     t = self._rep.get(d)
                     if t is None:
                         self._nav.append(d)
+                        self._nav_pad.append(d)
                         self._rep[d] = 0.4
                     else:
                         t -= dt
                         if t <= 0:
                             self._nav.append(d)
+                            self._nav_pad.append(d)
                             t = 0.13
                         self._rep[d] = t
                 else:

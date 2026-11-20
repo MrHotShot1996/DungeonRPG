@@ -6,6 +6,35 @@
 3. Run:  `python main.py`   (Mac/Linux: `python3 main.py`)
    - If pygame is missing, main.py installs it for you automatically.
 
+## Solo or Duo
+On the title screen pick **SOLO** (one player) or **DUO** (two players on the same PC). In Duo, Player 1 picks a
+hero, then Player 2 (you can both pick the same one).
+- **Controls:** Player 1 uses the left side of the keyboard (WASD, Space, 1/2/3, R, Left-Shift, E). Player 2 uses
+  the right side (see the table below) or a controller. With one controller plugged in, Player 2 gets it (press
+  Tab or L1/R1 on the hero-select screen to give it to Player 1 instead). With two, each player gets one.
+  Player 2's keys can be changed in Controls > PLAYER 2 KEYS.
+- **One screen:** the camera stays between you, and you can't walk so far apart that one of you leaves the screen.
+- **Shared:** both heroes get the XP for every kill (so you level up together) and every coin and chest counts
+  for both. **Your own:** health, abilities, ability points, items and gold to spend. After the stairs, Player 1
+  shops first, then Player 2. The pause menu has a shop for each player.
+- **Going down:** a hero at 0 health goes DOWN instead of dying. Stand next to them for 2.5 seconds to revive them
+  (they come back with 35% health). Going down the stairs also brings a downed partner back. The run only ends
+  when BOTH of you are down.
+- **Harder monsters:** there are about 35% more monsters, and they have more health (bosses even more) and hit
+  harder, so a Duo run feels about as tough as a Solo run. XP and gold per kill are trimmed, so each hero levels
+  and shops at the same pace as in Solo. The numbers are in settings.py (the DUO block).
+
+| Player 2 key | What it does |
+|---|---|
+| Arrow keys | Walk |
+| Right-Ctrl or Numpad 0 (hold) | Attack |
+| `,` `.` `/` or Numpad 1 2 3 | Abilities 1 / 2 / 3 |
+| `;` or Numpad 4 | Ultimate (Shadow Ninja) |
+| Right-Shift or Numpad Enter | Dash |
+| Enter or Numpad 5 | Go down the stairs |
+| `'` or Numpad 6 (hold) | Show your stats |
+| Backspace | Pause |
+
 ## Pick your hero (9 classes, 20 floors)
 Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
 the Shadow Ninja, the Arcane Explorer,
@@ -112,7 +141,7 @@ and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
 ## Keyboard controls (default)
 | Key | What it does |
 |---|---|
-| WASD / Arrow keys | Walk |
+| WASD / Arrow keys | Walk (in Duo the arrows are Player 2's) |
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
 | R | Ultimate (Shadow Ninja) |

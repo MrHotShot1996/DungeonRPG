@@ -10,6 +10,7 @@ import items as IT
 
 V2 = pygame.Vector2
 BOSS_KINDS = ('boss', 'warlord', 'lich', 'demon')
+DUO_SCALE = {'hp': 1.0, 'boss_hp': 1.0, 'dmg': 1.0}   # set by the game: bigger for a Duo run
 
 
 def xp_for(level):
@@ -78,6 +79,10 @@ class Player(Entity):
         self.hurt_flash = 0.0
         self.anim = 0.0
         self.moving = False
+        self.slot = 0                # Duo: 0 = Player 1, 1 = Player 2
+        self.downed = False          # Duo: knocked down (a partner standing close brings you back)
+        self.revive = 0.0            # ...how far the revive has got (seconds)
+        self.ctx = {}                # Duo: this hero's share of the game's state while the OTHER hero is active
 
     def refresh_items(self):
         """Call after `self.items` changes: adds up the stats and powers again."""
@@ -95,7 +100,7 @@ class Player(Entity):
         for name in ('attack_cd', 'swing', 'invuln', 'dash_cd', 'slow_t', 'spin', 'hurt_flash',
                      'echo_cd', 'guard_cd', 'tempo_cd'):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
-        for i in range(3):
+        for i in range(len(self.ability_cd)):        # (all 4 slots: the 4th is the ultimate)
             self.ability_cd[i] = max(0.0, self.ability_cd[i] - dt)
         for k in list(self.buffs):
             self.buffs[k] -= dt
@@ -170,8 +175,12 @@ class Player(Entity):
             game.float_text(self.x, self.y - 30, "Blocked!", (200, 200, 200))
 
     def hurt(self, dmg, sx, sy, game):
-        if self.invuln > 0 or self.hp <= 0:
+        if self.invuln > 0 or self.hp <= 0 or self.downed:
             return
+        with game.as_player(self):                   # (Duo: thorns, rumble etc. belong to the hero that was hit)
+            self._hurt(dmg, sx, sy, game)
+
+    def _hurt(self, dmg, sx, sy, game):
         if self.buffs.get('shield', 0) > 0:
             game.audio.play('deflect')
             game.burst(self.x, self.y, (120, 180, 255), 8, 120, glow=True)
@@ -237,6 +246,8 @@ class Enemy(Entity):
         dmg_scale = 1.0 if boss else 1 + 0.16 * (min(floor, 10) - 1) + 0.09 * deep
         hp_scale *= BOSS_HP_MULT if boss else ENEMY_HP_MULT       # the difficulty knobs from settings.py
         dmg_scale *= BOSS_DMG_MULT if boss else ENEMY_DMG_MULT
+        hp_scale *= DUO_SCALE['boss_hp' if boss else 'hp']         # (Duo: tougher monsters for two heroes)
+        dmg_scale *= DUO_SCALE['dmg']
         self.max_hp = self.hp = int(d['hp'] * hp_scale * (2.2 if self.elite else 1.0))
         self.dmg = int(d['dmg'] * dmg_scale * (1.25 if self.elite else 1.0))
         self.speed = d['speed'] * min(1.3, 1 + 0.03 * (floor - 1)) * (1.0 if boss else ENEMY_SPEED_MULT)
@@ -276,6 +287,25 @@ class Enemy(Entity):
         self.seen = set()          # hero shots it has already decided whether to dodge
         self.attacker = True       # melee: may it close in right now? (or wait its turn, circling)
         self.turn_t = self.rest_t = 0.0                 # how long its turn has lasted / rest after a turn
+
+    def summon(self, game, kind, ox, oy, floor):
+        """A boss calls a helper next to itself - on open floor (never inside a wall)."""
+        e = Enemy(kind, self.x + ox, self.y + oy, floor)
+        r = math.hypot(ox, oy) or 60
+        base = math.atan2(oy, ox)
+        spots = [(self.x + ox, self.y + oy)]
+        for rr in (r, r * 0.66, r * 0.33):
+            for k in range(12):
+                a = base + k * math.pi / 6
+                spots.append((self.x + math.cos(a) * rr, self.y + math.sin(a) * rr))
+        spots.append((self.x, self.y))
+        for x, y in spots:
+            e.x, e.y = x, y
+            if not game.dungeon.hits_wall(e.rect):
+                break
+        e.awake = True
+        game.enemies.append(e)
+        return e
 
     # ---- who do we chase? the player, or a nearby ally that is closer
     def target_pos(self, game):
@@ -535,8 +565,7 @@ class Enemy(Entity):
                 game.show_banner("The Bone King is ANGRY!" if want == 2 else "THE BONE KING UNLEASHES HIS POWER!")
                 game.audio.play('boss'); game.shake = 0.6
                 for ox in (-60, 60):
-                    game.enemies.append(Enemy('bat', self.x + ox, self.y, 8))
-                    game.enemies[-1].awake = True
+                    self.summon(game, 'bat', ox, 0, 8)
             self.shoot_t -= dt
             if self.shoot_t <= 0:
                 self.shoot_t = (2.2, 1.7, 1.3)[self.phase - 1]
@@ -691,16 +720,16 @@ class Enemy(Entity):
                     self.summon_t = 11 if self.phase == 3 else 8
                     if len(game.enemies) < 12:
                         for ox in (-100, 100):
-                            game.enemies.append(Enemy(random.choice(('imp', 'brute', 'cultist')), self.x + ox, self.y + 20, self.floor))
-                            game.enemies[-1].awake = True
-                            game.burst(self.x + ox, self.y + 20, (255, 100, 40), 14, 140, glow=True)
+                            m = self.summon(game, random.choice(('imp', 'brute', 'cultist')), ox, 20, self.floor)
+                            game.burst(m.x, m.y, (255, 100, 40), 14, 140, glow=True)
                         game.audio.play('warp')
 
         # touching the player or an ally hurts them
         if k != 'imp':
             r = self.rect
-            if r.colliderect(p.rect):
-                p.hurt(self.dmg, self.x, self.y, game)
+            for h in game.heroes():
+                if r.colliderect(h.rect):
+                    h.hurt(self.dmg, self.x, self.y, game)
             for m in game.minions:
                 if r.colliderect(m.rect):
                     m.hurt(self.dmg, game)
@@ -863,13 +892,14 @@ class Projectile:
         if self.life <= 0 or game.dungeon.is_wall(int(self.x // TILE), int(self.y // TILE)):
             self.alive = False
             return
-        p = game.player
-        if math.hypot(p.x - self.x, p.y - self.y) < self.radius + 10:
-            p.hurt(self.dmg, self.x - self.vx, self.y - self.vy, game)
-            if self.effect == 'slow' and p.buffs.get('shield', 0) <= 0:
-                p.slow_t = 2.5
-                game.float_text(p.x, p.y - 38, "Slowed!", (220, 220, 255))
-            self.alive = False
+        for p in game.heroes():
+            if math.hypot(p.x - self.x, p.y - self.y) < self.radius + 10:
+                p.hurt(self.dmg, self.x - self.vx, self.y - self.vy, game)
+                if self.effect == 'slow' and p.buffs.get('shield', 0) <= 0:
+                    p.slow_t = 2.5
+                    game.float_text(p.x, p.y - 38, "Slowed!", (220, 220, 255))
+                self.alive = False
+                return
 
 
 class Bolt:
