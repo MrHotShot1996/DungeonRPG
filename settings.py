@@ -61,3 +61,8 @@ DUO_GOLD = 0.75               # gold per coin dropped by monsters (both heroes g
 REVIVE_RANGE = 70             # a downed hero is revived by the partner standing this close...
 REVIVE_TIME = 2.5             # ...for this many seconds
 REVIVE_HP = 0.35              # ...and comes back with this much of their health
+
+# ---- DASH (every hero)
+DASH_COOLDOWN = 4.0           # seconds between dashes
+DASH_TIME = 0.16              # how long a dash lasts (you can't be hurt while dashing)...
+DASH_SPEED = 2.2              # ...and how fast it goes, times your walking speed (was 3.3: dashes are 1/3 shorter)

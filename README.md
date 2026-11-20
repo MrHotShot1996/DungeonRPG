@@ -161,7 +161,7 @@ and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
 | R | Ultimate (Shadow Ninja, Vampire Lord) |
-| SHIFT | Dash (you can't be hurt for a moment) |
+| SHIFT | Dash (you can't be hurt for a moment; once every 4 seconds - DASH_COOLDOWN in settings.py) |
 | E | Go down the stairs |
 | TAB (hold) | Show your stats |
 | P / ESC | Pause |

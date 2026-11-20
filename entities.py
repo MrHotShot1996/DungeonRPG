@@ -3,7 +3,7 @@ import math
 import random
 import pygame
 from settings import (MAP_W, MAP_H, TILE, ENEMY_HP_MULT, ENEMY_DMG_MULT, ENEMY_SPEED_MULT, BOSS_HP_MULT, BOSS_DMG_MULT,
-                      HURT_INVULN, XP_MULT)
+                      HURT_INVULN, XP_MULT, DASH_COOLDOWN, DASH_TIME, DASH_SPEED)
 from classes import CLASSES
 from ai import smarts_for, memory_time, lunge_lead
 import items as IT
@@ -46,7 +46,7 @@ class Player(Entity):
         self.cls = cls
         self.max_hp = self.hp = c['hp']
         self.dmg, self.speed, self.crit = c['dmg'], c['speed'], c['crit']
-        self.dash_cd_base = c['dash_cd']
+        self.dash_cd_base = DASH_COOLDOWN              # (the same for every hero - settings.py)
         self.kill_heal = c.get('kill_heal', 0)
         self.heal_bank = 0.0         # every kill adds a sliver of health here; whole points get paid out
         self.ls_budget = self.max_hp * 0.12   # life abilities may still steal right now (refills over time)
@@ -127,14 +127,14 @@ class Player(Entity):
             self.face = V2(aim)
 
         if inp.held('dash') and self.dash_cd <= 0 and self.dash_t <= 0 and not pooled:
-            self.dash_t, self.dash_cd = 0.16, self.dash_cd_base
+            self.dash_t, self.dash_cd = DASH_TIME, self.dash_cd_base
             self.dash_vec = V2(vec).normalize() if self.moving else V2(self.face)
             self.invuln = max(self.invuln, 0.22)
             game.audio.play('dash')
 
         if self.dash_t > 0:
             self.dash_t -= dt
-            v = self.dash_vec * self.speed * 3.3
+            v = self.dash_vec * self.speed * DASH_SPEED
             if random.random() < game.fx:
                 game.burst(self.x, self.y + 6, (170, 190, 255), 2, 40, glow=True)
         else:
