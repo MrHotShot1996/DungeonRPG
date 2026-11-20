@@ -101,8 +101,12 @@ class PadBackend:
     """A thin layer over SDL's game-controller API. It gives every controller the SAME button names,
     so a PS5 DualSense works the same on Windows, Mac and Linux. (Falls back to the raw joystick API.)"""
 
-    def __init__(self, index=0):
-        self.index = index            # 0 = the first controller plugged in, 1 = the second (Duo's Player 2)
+    CLAIMED = set()                   # Duo: controllers (instance ids) that belong to a player right now
+
+    def __init__(self, index=0, uid=None, guid=None):
+        self.index = index            # Solo: 0 = the first controller plugged in
+        self.uid = uid                # Duo: THIS exact controller (SDL instance id) - nobody else's
+        self.guid = guid              # ...its model id, to find it again if it is unplugged and plugged back in
         self.ctrl = None
         self.joy = None
         self.name = ''
@@ -123,8 +127,44 @@ class PadBackend:
     def connected(self):
         return self.ctrl is not None or self.joy is not None
 
+    def _open(self, i):
+        """Open device number i (game-controller API if SDL knows it, else the raw joystick API)."""
+        try:
+            if self._sdlc is not None and self._sdlc.is_controller(i):
+                self.ctrl = self._sdlc.Controller(i)
+                nm = getattr(self.ctrl, 'name', None) or self._sdlc.name_forindex(i) or 'Controller'
+                self.name = nm.decode() if isinstance(nm, bytes) else str(nm)
+                return
+        except Exception:
+            self.ctrl = None
+        try:
+            j = pygame.joystick.Joystick(i)
+            j.init()
+            self.joy, self.name = j, j.get_name()
+        except Exception:
+            self.joy = None
+
+    def _refresh_uid(self):
+        """Duo: stay on our own controller. If it was unplugged, take it back when it returns (same model,
+        not claimed by the other player)."""
+        devs = list_pads()
+        mine = [d for d in devs if d['uid'] == self.uid]
+        if mine and self.connected:
+            return
+        self.ctrl = self.joy = None
+        self.name = ''
+        if not mine and self.guid:
+            mine = [d for d in devs if d['guid'] == self.guid and d['uid'] not in PadBackend.CLAIMED]
+        if mine:
+            PadBackend.CLAIMED.discard(self.uid)
+            self.uid = mine[0]['uid']
+            PadBackend.CLAIMED.add(self.uid)
+            self._open(mine[0]['index'])
+
     def refresh(self):
         """(Re)connect to the first controller we can find. Called on start and on plug/unplug."""
+        if self.uid is not None:
+            return self._refresh_uid()
         if self.ctrl is not None:
             try:
                 if not self.ctrl.attached():
@@ -212,6 +252,39 @@ class PadBackend:
             pass
 
 
+def list_pads():
+    """Every controller plugged in right now: [{uid, index, guid, name}]. uid = SDL's instance id (unique
+    while it stays plugged in), index = its device number, guid = its model id."""
+    out = []
+    try:
+        pygame.joystick.init()
+        for i in range(pygame.joystick.get_count()):
+            j = pygame.joystick.Joystick(i)
+            try:
+                uid = j.get_instance_id()
+            except Exception:
+                uid = i
+            try:
+                guid = j.get_guid()
+            except Exception:
+                guid = ''
+            out.append(dict(uid=uid, index=i, guid=guid, name=j.get_name()))
+    except Exception:
+        pass
+    return out
+
+
+class NullPad:
+    """'No controller' (a player who only uses the keyboard)."""
+    uid = guid = None
+    index = -1
+    name = ''
+    connected = False
+    def refresh(self): pass
+    def poll(self): return set(), dict(lx=0.0, ly=0.0, rx=0.0, ry=0.0, lt=0.0, rt=0.0)
+    def rumble(self, *a): pass
+
+
 def pad_count():
     """How many controllers are plugged in right now."""
     try:
@@ -237,12 +310,14 @@ class Input:
         self.kb = {a: list(v) for a, v in DEFAULT_KB.items()}
         self.kb2 = {a: list(v) for a, v in DEFAULT_KB2.items()}      # Duo: Player 2's keys (saved with ours)
         self.pad = {a: list(v) for a, v in DEFAULT_PAD.items()}
+        self.pad2 = {a: list(v) for a, v in DEFAULT_PAD.items()}     # Duo: Player 2's OWN controller layout
         self.settings = dict(DEFAULT_SETTINGS)
         self.load()
-        if owner is not None:
-            self.kb, self.pad, self.settings = owner.kb2, owner.pad, owner.settings
+        if owner is not None:                # Player 2: their own keys and buttons (saved in Player 1's file)
+            self.kb, self.pad, self.settings = owner.kb2, owner.pad2, owner.settings
         self.blocked = set()                # keys this player must ignore (Duo: the other player's keys)
         self.pad_on = True                  # False = this player doesn't use a controller right now
+        self.use_kb = True                  # False = this player doesn't use the keyboard (Duo: on a controller)
         self.who = ''                       # 'P1' / 'P2' in Duo (for the 'controller connected' notes)
         self._nav_pad = []                  # menu moves that came from THIS player's controller
         self.backend = backend if backend is not None else PadBackend()
@@ -254,6 +329,7 @@ class Input:
         self._pad_now = set()
         self._rep = {}
         self._was_connected = False
+        self.captured = False
 
     # ---------------------------------------------------------------- saving & loading
     def load(self):
@@ -271,6 +347,9 @@ class Input:
             for a, v in data.get('gamepad', {}).items():
                 if a in self.pad and isinstance(v, list):
                     self.pad[a] = [str(k) for k in v][:2]
+            for a, v in data.get('gamepad2', {}).items():
+                if a in self.pad2 and isinstance(v, list):
+                    self.pad2[a] = [str(k) for k in v][:2]
             for k, v in data.get('settings', {}).items():
                 if k in self.settings:
                     self.settings[k] = type(DEFAULT_SETTINGS[k])(v)
@@ -282,25 +361,28 @@ class Input:
             return
         try:
             with open(self.path, 'w') as f:
-                json.dump({'keyboard': self.kb, 'keyboard2': self.kb2, 'gamepad': self.pad, 'settings': self.settings},
-                          f, indent=1)
+                json.dump({'keyboard': self.kb, 'keyboard2': self.kb2, 'gamepad': self.pad, 'gamepad2': self.pad2,
+                           'settings': self.settings}, f, indent=1)
         except Exception:
             pass
 
     def reset(self, device):
+        """Back to the defaults (in place, so Player 2's input - which shares these tables - sees it too)."""
         if device == 'keyboard':
-            self.kb = {a: list(v) for a, v in DEFAULT_KB.items()}
+            self.kb.clear(); self.kb.update({a: list(v) for a, v in DEFAULT_KB.items()})
         elif device == 'keyboard2':
-            self.kb2.clear()
-            self.kb2.update({a: list(v) for a, v in DEFAULT_KB2.items()})
+            self.kb2.clear(); self.kb2.update({a: list(v) for a, v in DEFAULT_KB2.items()})
+        elif device == 'gamepad2':
+            self.pad2.clear(); self.pad2.update({a: list(v) for a, v in DEFAULT_PAD.items()})
         else:
-            self.pad = {a: list(v) for a, v in DEFAULT_PAD.items()}
-            self.settings = dict(DEFAULT_SETTINGS)
+            self.pad.clear(); self.pad.update({a: list(v) for a, v in DEFAULT_PAD.items()})
+            self.settings.clear(); self.settings.update(DEFAULT_SETTINGS)
         self.save()
 
     # ---------------------------------------------------------------- asking "what does the player want?"
     def begin_frame(self):
         self._pressed, self._nav, self._nav_pad = set(), [], []
+        self.captured = False               # True on the frame a rebind finished (that press does nothing else)
 
     def pressed(self, action):
         return action in self._pressed
@@ -364,6 +446,8 @@ class Input:
             return [key_label(k) for k in self.kb.get(action, [])]
         if device == 'keyboard2':
             return [key_label(k) for k in self.kb2.get(action, [])]
+        if device == 'gamepad2':
+            return [pad_label(c) for c in self.pad2.get(action, [])]
         return [pad_label(c) for c in self.pad.get(action, [])]
 
     def pad_primary(self, action):
@@ -375,11 +459,13 @@ class Input:
         return key_label(lst[0]) if lst else None
 
     # ---------------------------------------------------------------- changing the controls
-    def start_capture(self, device, action, slot):
-        if device == 'gamepad' and not self.connected:
+    def start_capture(self, device, action, slot, src=None):
+        """Wait for a new key/button. `src` = the controller to listen to (Duo: it may be Player 2's)."""
+        pad = src if src is not None else (self.backend if self.pad_on else None)
+        if device in ('gamepad', 'gamepad2') and not (pad is not None and pad.connected):
             self.messages.append(("No controller found. See the SETUP tab to connect one.", (255, 140, 120)))
             return False
-        self.capture = dict(device=device, action=action, slot=slot, t=7.0, arm=0.25)
+        self.capture = dict(device=device, action=action, slot=slot, t=7.0, arm=0.25, src=src)
         return True
 
     def cancel_capture(self, note=None):
@@ -388,11 +474,11 @@ class Input:
             self.messages.append((note, (220, 220, 230)))
 
     def _table(self, device):
-        return {'keyboard': self.kb, 'keyboard2': self.kb2}.get(device, self.pad)
+        return {'keyboard': self.kb, 'keyboard2': self.kb2, 'gamepad2': self.pad2}.get(device, self.pad)
 
     def _assign(self, device, action, slot, code):
         table = self._table(device)
-        shown = pad_label if device == 'gamepad' else key_label
+        shown = pad_label if device in ('gamepad', 'gamepad2') else key_label
         moved = None
         for a, lst in table.items():                 # a key/button can only do ONE thing
             if a != action and code in lst:
@@ -405,6 +491,7 @@ class Input:
         lst.insert(slot, code) if slot >= len(lst) else lst.__setitem__(slot, code)
         del lst[2:]
         self.capture = None
+        self.captured = True
         self.save()
         msg = f"{ACTION_LABELS[action]} = {shown(code)}"
         if moved:
@@ -416,6 +503,7 @@ class Input:
         if slot < len(table[action]):
             del table[action][slot]
         self.capture = None
+        self.captured = True
         self.save()
         self.messages.append((f"Cleared {ACTION_LABELS[action]}", (220, 220, 230)))
 
@@ -424,7 +512,8 @@ class Input:
         """Returns True if this event was 'eaten' (used for rebinding) and the game should ignore it."""
         t = e.type
         if t == pygame.KEYDOWN:
-            self.device = 'keyboard'
+            if self.use_kb:
+                self.device = 'keyboard'
             cap = self.capture
             if cap:
                 if e.key == pygame.K_ESCAPE:
@@ -436,13 +525,14 @@ class Input:
                 return True
             if e.key not in self.blocked:
                 for act, keys in self.kb.items():
-                    if e.key in keys:
+                    if e.key in keys and (self.use_kb or act in ('pause', 'mute')):
                         self._pressed.add(act)
             n = KEY_NAV.get(e.key)
             if n:
                 self._nav.append(n)
         elif t == pygame.MOUSEBUTTONDOWN:
-            self.device = 'keyboard'
+            if self.use_kb:
+                self.device = 'keyboard'
         elif t in _ADD or t in _REM:
             self.backend.refresh()
             self._check_connection()
@@ -464,11 +554,14 @@ class Input:
         keys = keys if keys is not None else pygame.key.get_pressed()
         held = set()
         for act, ks in self.kb.items():
-            if any(keys[k] for k in ks if k not in self.blocked):
+            if (self.use_kb or act == 'stats') and any(keys[k] for k in ks if k not in self.blocked):
                 held.add(act)
 
         prev = self._pad_now
-        if self.pad_on:
+        src = self.capture.get('src') if self.capture else None
+        if src is not None:                       # (rebinding: listen to the chosen controller)
+            buttons, axes = src.poll()
+        elif self.pad_on:
             buttons, axes = self.backend.poll()
         else:
             buttons, axes = set(), dict(lx=0.0, ly=0.0, rx=0.0, ry=0.0, lt=0.0, rt=0.0)
@@ -488,8 +581,8 @@ class Input:
             cap['arm'] = max(0.0, cap['arm'] - dt)
             if cap['t'] <= 0:
                 self.cancel_capture("Rebinding cancelled (nothing was pressed)")
-            elif cap['device'] == 'gamepad' and cap['arm'] <= 0 and new:
-                self._assign('gamepad', cap['action'], cap['slot'], sorted(new)[0])
+            elif cap['device'] in ('gamepad', 'gamepad2') and cap['arm'] <= 0 and new:
+                self._assign(cap['device'], cap['action'], cap['slot'], sorted(new)[0])
         else:
             for act, cs in self.pad.items():
                 if any(c in buttons for c in cs):

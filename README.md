@@ -9,10 +9,12 @@
 ## Solo or Duo
 On the title screen pick **SOLO** (one player) or **DUO** (two players on the same PC). In Duo, Player 1 picks a
 hero, then Player 2 (you can both pick the same one).
-- **Controls:** Player 1 uses the left side of the keyboard (WASD, Space, 1/2/3, R, Left-Shift, E). Player 2 uses
-  the right side (see the table below) or a controller. With one controller plugged in, Player 2 gets it (press
-  Tab or L1/R1 on the hero-select screen to give it to Player 1 instead). With two, each player gets one.
-  Player 2's keys can be changed in Controls > PLAYER 2 KEYS.
+- **Joining:** after choosing DUO, each player presses a key or a controller button on the device they will
+  play with. From then on each hero listens ONLY to their own device: keyboard + controller, two controllers, or
+  one shared keyboard (Player 1 = WASD side, Player 2 = arrow side, keys below). A controller that is unplugged
+  and plugged back in goes back to the same player. Esc / Circle on the join screen takes a player out again.
+- **Separate settings:** Player 2 has their own keyboard keys and their own controller buttons
+  (Controls > P2 KEYBOARD / P2 CONTROLLER); changing one player's never changes the other's.
 - **One screen:** the camera stays between you, and you can't walk so far apart that one of you leaves the screen.
 - **Shared:** both heroes get the XP for every kill (so you level up together) and every coin and chest counts
   for both. **Your own:** health, abilities, ability points, items and gold to spend. After the stairs, Player 1

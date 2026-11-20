@@ -20,7 +20,7 @@ from classes import (CLASSES, CLASS_ORDER, ABILITIES, UNLOCK_LEVELS, NO_DAMAGE, 
                      unlock_level, slot_key)
 from biomes import biome, floor_name
 from inputs import (Input, ACTION_LABELS, GAME_ACTIONS, PAD_ACTIONS, PAD_LABELS, DEFAULT_SETTINGS, draw_pad_icon,
-                    PadBackend, pad_count)
+                    PadBackend, pad_count, list_pads, NullPad, DEFAULT_KB2)
 
 # Duo: the parts of the game's state that belong to ONE hero. While a hero is "active" (moving, casting, being hit)
 # these live on the Game as usual; the other hero's copies wait in that hero's .ctx (see Game.switch_to).
@@ -153,7 +153,9 @@ class Game:
         self.menu_player = None                # Duo: whose ability-point / shop screen is open
         self.shop_queue = []                   # Duo: heroes still waiting for their shop after the stairs
         self.pick1 = None                      # Duo hero select: Player 1's choice (Player 2 picks next)
-        self.pad_p1 = False                    # Duo with ONE controller: True = Player 1 has it (else Player 2)
+        self.seats = [None, None]              # Duo: the device each player joined with (see the join screen)
+        self.join_pads, self.join_prev = {}, {}
+        self.raw_keys = []                     # keys pressed this frame (the join screen listens to these)
         self.sel_duo = False                   # the hero-select screen is choosing for a Duo run
         self.stats_who = None
         self.dungeon = None
@@ -175,7 +177,9 @@ class Game:
         self.sel = 0
         self.input = Input(os.path.join(base_dir, 'controls.json'))
         self.in1 = self.input                  # Player 1's input (also drives every menu)
-        self.in2 = Input(None, backend=PadBackend(1), owner=self.in1)    # Duo: Player 2's keys + 2nd controller
+        self.main_pad = self.in1.backend       # Solo: the first controller plugged in
+        self.in2 = Input(None, backend=NullPad(), owner=self.in1)        # Duo: Player 2's own keys + controller
+        self.in2.pad_on = False
         self.in2.who = 'P2'
         self.toasts = []                      # little pop-up notes ("Controller connected")
         self.menu_sel = 0
@@ -276,36 +280,138 @@ class Game:
         return self.duo or (self.state == 'select' and self.sel_duo)
 
     def apply_seats(self, duo=None):
-        """Who uses which keys and controller. Solo: Player 1 has everything. Duo: Player 1 = left keys (WASD),
-        Player 2 = right keys (arrows); one controller goes to Player 2 (or Player 1 if swapped), two = one each."""
+        """Give each player ONLY the device they joined with, so nothing one player presses moves the other.
+        Solo: Player 1 has the whole keyboard and the first controller.
+        Duo:  'kb'  = the keyboard (Player 1: all of it, or the left side if Player 2 shares it)
+              'kb2' = Player 2 on the keyboard (Player 2's own keys: arrows, R-Ctrl...)
+              'pad' = one exact controller (that player doesn't use the keyboard at all)"""
         a, b = self.in1, self.in2
+        PadBackend.CLAIMED.clear()
         if not (self.duo if duo is None else duo):
-            a.blocked, a.pad_on = set(), True
-            a.who = ''
+            a.backend, a.blocked, a.pad_on, a.use_kb, a.who = self.main_pad, set(), True, True, ''
+            b.backend, b.pad_on, b.use_kb = NullPad(), False, False
+            for i_ in (a, b):
+                i_._was_connected = i_.backend.connected
             return
+        s1, s2 = self.seats
+        if s1 is None or s2 is None:                    # (not chosen yet: share the keyboard)
+            s1, s2 = dict(dev='kb'), dict(dev='kb2')
         a.who, b.who = 'P1', 'P2'
-        a.blocked = {k for ks in b.kb.values() for k in ks}     # a key in Player 2's list belongs to Player 2
+        for inp, seat in ((a, s1), (b, s2)):
+            if seat['dev'] == 'pad':
+                inp.backend, inp.pad_on, inp.use_kb, inp.device = seat['pad'], True, False, 'gamepad'
+                if seat['pad'].uid is not None:
+                    PadBackend.CLAIMED.add(seat['pad'].uid)
+            else:
+                inp.backend, inp.pad_on, inp.use_kb, inp.device = NullPad(), False, True, 'keyboard'
+            inp._was_connected = inp.backend.connected
+            inp._pad_now = set()
         b.blocked = set()
-        n = pad_count()
-        if n >= 2:
-            a.pad_on, b.pad_on, idx = True, True, 1
-        elif n == 1:
-            a.pad_on, b.pad_on, idx = self.pad_p1, not self.pad_p1, 0
-        else:
-            a.pad_on, b.pad_on, idx = True, False, 1
-        if b.backend.index != idx:
-            b.backend.index = idx
-            b.backend.ctrl = b.backend.joy = None
-            b.backend.name = ''
-            b.backend.refresh()
+        a.blocked = {k for ks in b.kb.values() for k in ks} if (s1['dev'] == 'kb' and s2['dev'] == 'kb2') else set()
 
     def seat_label(self, slot):
-        """'Keyboard (WASD)' / 'Controller' ... for the Duo screens."""
-        inp = self.in1 if slot == 0 else self.in2
-        keys = "WASD keys" if slot == 0 else "Arrow keys"
-        if inp.pad_on and inp.backend.connected:
-            return f"{keys} or Controller"
-        return keys
+        """What a player plays with, in words (Duo screens)."""
+        s = self.seats[slot]
+        if s is None:
+            return "Keyboard - left side (WASD)" if slot == 0 else "Keyboard - right side (arrows)"
+        if s['dev'] == 'pad':
+            return f"Controller ({s['pad'].name or 'gamepad'})" if s['pad'].connected else "Controller (unplugged!)"
+        other = self.seats[1 - slot]
+        if other is not None and other['dev'] != 'pad':
+            return "Keyboard - left side (WASD)" if slot == 0 else "Keyboard - right side (arrows)"
+        return "Keyboard" if slot == 0 else "Keyboard (arrow keys)"
+
+    # ------------------------------------------------------------ Duo: the join screen
+    def pad_factory(self, d):
+        return PadBackend(uid=d['uid'], guid=d['guid'])
+
+    def go_join(self):
+        """Duo: each player presses a key or a controller button to say what they will play with."""
+        self.audio.play('select')
+        self.seats = [None, None]
+        self.join_pads, self.join_prev = {}, {}
+        self.apply_seats(duo=False)
+        self.join_scan()
+        self.state = 'join'
+
+    def join_scan(self):
+        """Open every controller that is plugged in (and forget unplugged ones nobody has joined with)."""
+        live = {d['uid']: d for d in list_pads()}
+        seated = {id(s['pad']) for s in self.seats if s and s['dev'] == 'pad'}
+        for uid in list(self.join_pads):
+            if uid not in live and id(self.join_pads[uid]) not in seated:
+                del self.join_pads[uid]
+                self.join_prev.pop(uid, None)
+        for uid, d in live.items():
+            if uid not in self.join_pads:
+                be = self.pad_factory(d)
+                self.join_pads[uid] = be
+                self.join_prev[uid] = be.poll()[0]          # (a button already held doesn't count)
+
+    def seat_of(self, pad):
+        return next((i for i, s in enumerate(self.seats) if s and s.get('pad') is pad), None)
+
+    def join_take(self, seat):
+        i = self.seats.index(None)
+        if i == 1 and seat['dev'] == 'kb':
+            seat = dict(dev='kb2')                       # Player 2 on the keyboard: Player 2's keys
+        self.seats[i] = seat
+        self.audio.play('levelup')
+
+    def join_leave(self, i):
+        self.seats[i] = None
+        if i == 0 and self.seats[1] is not None:         # Player 2 moves up to Player 1
+            s = self.seats[1]
+            self.seats = [dict(dev='kb') if s['dev'] == 'kb2' else s, None]
+        self.audio.play('select')
+
+    def join_go(self):
+        self.apply_seats(duo=True)
+        self.go_select(True)
+
+    def join_input(self):
+        full = None not in self.seats
+        kb_seat = next((i for i, s in enumerate(self.seats) if s and s['dev'] != 'pad'), None)
+        for k in self.raw_keys:                          # ---- the keyboard
+            if k == pygame.K_ESCAPE:
+                if kb_seat is not None:
+                    self.join_leave(max(i for i, s in enumerate(self.seats) if s and s['dev'] != 'pad'))
+                elif not any(self.seats):
+                    self.go_title()
+                    return
+                else:
+                    self.join_leave(max(i for i, s in enumerate(self.seats) if s))
+            elif full:
+                if k in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
+                    self.join_go()
+                    return
+            elif kb_seat is None:
+                self.join_take(dict(dev='kb'))
+            elif kb_seat == 0 and self.seats[1] is None and k != pygame.K_RETURN and \
+                    any(k in ks for ks in self.in1.kb2.values()):
+                self.join_take(dict(dev='kb2'))          # a 2nd player on the SAME keyboard (right side)
+            full = None not in self.seats
+            kb_seat = next((i for i, s in enumerate(self.seats) if s and s['dev'] != 'pad'), None)
+        for uid, be in list(self.join_pads.items()):      # ---- controllers
+            now = be.poll()[0]
+            new = now - self.join_prev.get(uid, set())
+            self.join_prev[uid] = now
+            if not new:
+                continue
+            i = self.seat_of(be)
+            full = None not in self.seats
+            if i is not None:
+                if 'b' in new:
+                    self.join_leave(i)
+                elif full and new & {'a', 'start'}:
+                    self.join_go()
+                    return
+            elif 'b' in new:
+                if not any(self.seats):
+                    self.go_title()
+                    return
+            elif not full:
+                self.join_take(dict(dev='pad', pad=be))
 
 
     # ------------------------------------------------------------ pretty-picture helpers
@@ -2337,15 +2443,22 @@ class Game:
         """Start of a frame: forget last frame's key presses (both players)."""
         self.in1.begin_frame()
         self.in2.begin_frame()
+        self.raw_keys = []
 
     def feed_event(self, e):
         """A pygame event: to Player 1's input (it may eat it while rebinding), Player 2's in Duo, then the game."""
         if self.in1.handle_event(e):
             return
+        if e.type == pygame.KEYDOWN:
+            self.raw_keys.append(e.key)
         if self.p2_live():
             self.in2.handle_event(e)
-        if e.type in ENT_PAD_EVENTS and self.p2_live():
-            self.apply_seats(duo=True)               # a controller was plugged in / out: share them out again
+        if e.type in ENT_PAD_EVENTS:
+            if self.state == 'join':
+                self.join_scan()                         # a controller was plugged in / out
+            elif self.duo:
+                PadBackend.CLAIMED = {i_.backend.uid for i_ in (self.in1, self.in2)
+                                      if i_.pad_on and i_.backend.uid is not None}
         self.handle_event(e)
 
     # ------------------------------------------------------------ menus
@@ -2353,7 +2466,7 @@ class Game:
                       'stick_attack': 'Right stick auto-attacks', 'aim_assist': 'Aim assist'}
 
     def title_items(self):
-        return [("SOLO", lambda: self.go_select(False)), ("DUO", lambda: self.go_select(True)),
+        return [("SOLO", lambda: self.go_select(False)), ("DUO", self.go_join),
                 ("MUSIC", lambda: self.open_music('title')),
                 ("CONTROLS", lambda: self.open_controls('title')), ("QUIT", self.quit_game)]
 
@@ -2767,6 +2880,8 @@ class Game:
             rows = [('bind', a) for a in GAME_ACTIONS] + [('reset', None)]
         elif self.ctl_tab == 3:                               # Duo: Player 2's keys
             rows = [('bind', a) for a in GAME_ACTIONS if a != 'mute'] + [('reset', None)]
+        elif self.ctl_tab == 4:                               # Duo: Player 2's controller buttons
+            rows = [('bind', a) for a in PAD_ACTIONS if a != 'mute'] + [('reset', None)]
         elif self.ctl_tab == 1:
             rows = ([('bind', a) for a in PAD_ACTIONS] + [('slider', 'deadzone'), ('toggle', 'vibration'),
                     ('toggle', 'stick_aims'), ('toggle', 'stick_attack'), ('toggle', 'aim_assist'), ('reset', None)])
@@ -2790,11 +2905,18 @@ class Game:
         inp = self.input
         if kind == 'bind':
             device = self.TAB_DEVICE.get(self.ctl_tab, 'keyboard')
-            if device == 'gamepad' and not inp.backend.connected:
-                self.toast("No controller found. Connect one first (see the LAYOUT & SETUP tab).", (255, 170, 140))
-                self.audio.play('deflect')
-                return
-            inp.start_capture(device, key, self.ctl_col)
+            src = None
+            if device in ('gamepad', 'gamepad2'):          # listen to that player's controller (or any there is)
+                order = (self.in2, self.in1) if device == 'gamepad2' else (self.in1, self.in2)
+                src = next((i_.backend for i_ in order if i_.pad_on and i_.backend.connected), None)
+                if src is None:
+                    self.main_pad.refresh()
+                    src = self.main_pad if self.main_pad.connected else None
+                if src is None:
+                    self.toast("No controller found. Connect one first (see the LAYOUT & SETUP tab).", (255, 170, 140))
+                    self.audio.play('deflect')
+                    return
+            inp.start_capture(device, key, self.ctl_col, src=src)
             self.audio.play('select')
         elif kind == 'toggle':
             inp.settings[key] = not inp.settings[key]
@@ -2846,7 +2968,7 @@ class Game:
             for msg, col in i_.messages:
                 self.toast(msg, col)
             i_.messages.clear()
-        if inp.capture is not None:                  # the Controls screen is waiting for a new key/button
+        if inp.capture is not None or inp.captured:  # the Controls screen is waiting for / just got a new key
             return
         if self.p2_live() and self.state not in ('playing', 'skill', 'shop'):
             inp._nav += self.in2._nav_pad              # Duo: Player 2's controller can work the menus too
@@ -2859,15 +2981,13 @@ class Game:
         n = len(CLASS_ORDER)
         if st == 'title':
             self.menu_input(self.title_items())
+        elif st == 'join':
+            self.join_input()
         elif st == 'select':
             if inp.nav('left'):
                 self.sel = (self.sel - 1) % n
             if inp.nav('right'):
                 self.sel = (self.sel + 1) % n
-            if self.sel_duo and (inp.nav('tab_next') or inp.nav('tab_prev')) and pad_count() == 1:
-                self.pad_p1 = not self.pad_p1            # one controller: who gets it?
-                self.apply_seats(duo=True)
-                self.audio.play('select')
             if inp.nav('confirm'):
                 self.select_confirm(self.sel)
             elif inp.nav('back'):
@@ -2875,6 +2995,10 @@ class Game:
                     self.sel = CLASS_ORDER.index(self.pick1)      # Player 2 went back: Player 1 chooses again
                     self.pick1 = None
                     self.audio.play('select')
+                elif self.sel_duo:
+                    self.audio.play('select')
+                    self.state = 'join'                           # back to choosing devices
+                    self.join_prev = {u: b.poll()[0] for u, b in self.join_pads.items()}
                 else:
                     self.go_title()
         elif st == 'playing':
@@ -3954,6 +4078,50 @@ class Game:
         img = self.sprites.glow(r, color, intensity)
         self.screen.blit(img, (int(x - img.get_width() / 2), int(y - img.get_height() / 2)), special_flags=pygame.BLEND_RGB_ADD)
 
+    def draw_join(self):
+        """Duo: who plays with what. Each player presses something on THEIR device."""
+        self.lit_backdrop([(WIDTH // 2, 300, 700, 0.55)])
+        self.dim((0, 0, 10), 70)
+        self.text("DUO: JOIN THE GAME", 60, (255, 214, 90), (WIDTH // 2, 70), center=True, outline=True)
+        self.text("Each player presses a key or a controller button on the device they will play with.",
+                  24, (220, 215, 235), (WIDTH // 2, 124), center=True, outline=True)
+        t = self.t
+        for i in range(2):
+            r = pygame.Rect(WIDTH // 2 - 520 + i * 540, 170, 500, 330)
+            s = self.seats[i]
+            self.panel(r, alpha=230, border=P_COLORS[i] if s else (110, 100, 130), radius=16,
+                       glow=P_COLORS[i] if s else None)
+            self.text(f"PLAYER {i + 1}", 46, P_COLORS[i], (r.centerx, r.y + 44), center=True, outline=True)
+            if s is None:
+                k = 0.55 + 0.45 * math.sin(t * 4 + i)
+                col = tuple(int(c * k) for c in (230, 225, 245))
+                self.text("Press any key", 30, col, (r.centerx, r.y + 140), center=True)
+                self.text("or any controller button", 30, col, (r.centerx, r.y + 180), center=True)
+                if i == 1 and self.seats[0] is not None and self.seats[0]['dev'] == 'kb':
+                    self.text("Same keyboard? Press an Arrow key.", 22, (190, 200, 230), (r.centerx, r.y + 240),
+                              center=True)
+                continue
+            if s['dev'] == 'pad':
+                draw_pad_icon(self.screen, 'a', r.centerx - 60, r.y + 140, 48, self.font(18))
+                draw_pad_icon(self.screen, 'b', r.centerx, r.y + 140, 48, self.font(18))
+                draw_pad_icon(self.screen, 'leftshoulder', r.centerx + 66, r.y + 140, 48, self.font(18))
+            else:
+                keys = "W A S D" if i == 0 and (self.seats[1] or {}).get('dev') == 'kb2' else (
+                    "W A S D  /  Arrows" if i == 0 else "Arrow keys")
+                self.text(keys, 34, (255, 255, 255), (r.centerx, r.y + 140), center=True, outline=True)
+            self.text(self.seat_label(i), 26, (235, 230, 245), (r.centerx, r.y + 200), center=True)
+            self.text("JOINED!", 30, (150, 255, 170), (r.centerx, r.y + 250), center=True, outline=True)
+            back = "Circle to leave" if s['dev'] == 'pad' else "Esc to leave"
+            self.text(back, 20, (180, 175, 200), (r.centerx, r.y + 296), center=True)
+        if None not in self.seats:
+            k = 0.6 + 0.4 * math.sin(t * 5)
+            self.text("Both players ready! Press Enter / Cross to choose your heroes", 30,
+                      tuple(int(c * k) for c in (255, 230, 140)), (WIDTH // 2, 560), center=True, outline=True)
+        else:
+            self.text("Esc / Circle: back", 22, (180, 175, 200), (WIDTH // 2, 560), center=True)
+        self.text("Each player only ever controls their own hero with the device they joined with.", 20,
+                  (170, 170, 195), (WIDTH // 2, 680), center=True)
+
     def draw_select(self):
         scr = self.screen
         self.lit_backdrop([(WIDTH // 2, 300, 700, 0.55)])
@@ -3962,8 +4130,6 @@ class Game:
             who = 0 if self.pick1 is None else 1
             self.text(f"PLAYER {who + 1}: CHOOSE YOUR HERO", 54, P_COLORS[who], (WIDTH // 2, 38), center=True, outline=True)
             seat = f"P1: {self.seat_label(0)}      P2: {self.seat_label(1)}"
-            if pad_count() == 1:
-                seat += "      (Tab / L1 / R1: swap who has the controller)"
             self.text(seat, 19, (215, 210, 230), (WIDTH // 2, 69), center=True, outline=True)
         else:
             self.text("CHOOSE YOUR HERO", 66, (255, 214, 90), (WIDTH // 2, 48), center=True, outline=True)
@@ -4017,8 +4183,8 @@ class Game:
 
     # ------------------------------------------------------------ the main draw
     # ------------------------------------------------------------ the CONTROLS screen
-    TAB_NAMES = ["KEYBOARD", "PS5 CONTROLLER", "LAYOUT & SETUP", "PLAYER 2 KEYS"]
-    TAB_DEVICE = {0: 'keyboard', 1: 'gamepad', 3: 'keyboard2'}
+    TAB_NAMES = ["P1 KEYBOARD", "P1 CONTROLLER", "LAYOUT & SETUP", "P2 KEYBOARD", "P2 CONTROLLER"]
+    TAB_DEVICE = {0: 'keyboard', 1: 'gamepad', 3: 'keyboard2', 4: 'gamepad2'}
 
     def draw_ps5_diagram(self, cx, cy):
         """A picture of the DualSense with every button labelled by what it does in this game."""
@@ -4089,7 +4255,7 @@ class Game:
         self.draw_pad_status(18, 16)
         # --- tabs
         n_tabs = len(self.TAB_NAMES)
-        tw = 262
+        tw = 262 if n_tabs <= 4 else 222
         for i, name in enumerate(self.TAB_NAMES):
             r = pygame.Rect(WIDTH // 2 - (n_tabs * tw + (n_tabs - 1) * 10) // 2 + i * (tw + 10), 78, tw, 40)
             on = i == self.ctl_tab
@@ -4127,10 +4293,13 @@ class Game:
     def draw_binding_table(self, panel):
         scr, inp = self.screen, self.input
         rows = self.ctl_rows()
-        pad = self.ctl_tab == 1
+        pad = self.ctl_tab in (1, 4)
         device = self.TAB_DEVICE.get(self.ctl_tab, 'keyboard')
         if self.ctl_tab == 3:
-            self.text("Duo only. A key in this list belongs to Player 2 (Player 1's copy of it is ignored in Duo).",
+            self.text("Duo: Player 2's keys (used when Player 2 joins with the keyboard).",
+                      18, (190, 200, 230), (panel.centerx, panel.bottom - 22), center=True)
+        elif self.ctl_tab == 4:
+            self.text("Duo: Player 2's own controller buttons (changing them never changes Player 1's).",
                       18, (190, 200, 230), (panel.centerx, panel.bottom - 22), center=True)
         n_bind = sum(1 for k, _ in rows if k == 'bind')
         rh = 28 if len(rows) > 14 else 34
@@ -4138,8 +4307,9 @@ class Game:
         self.text("ACTION", 20, (170, 170, 200), (x0 + 6, panel.y + 14))
         self.text("MAIN", 20, (170, 170, 200), (x0 + 430, panel.y + 14))
         self.text("ALTERNATIVE", 20, (170, 170, 200), (x0 + 640, panel.y + 14))
-        if pad and not inp.connected:
-            self.text("No controller connected - see the LAYOUT & SETUP tab", 22, (255, 160, 140), (panel.right - 24, panel.y + 12), right=True)
+        if pad and not (inp.connected or self.in2.connected or self.main_pad.connected):
+            self.text("No controller connected - see the LAYOUT & SETUP tab", 22, (255, 160, 140),
+                      (panel.centerx, panel.bottom - 50), center=True)
         for i, (kind, key) in enumerate(rows):
             y = y0 + i * rh
             r = pygame.Rect(x0, y, panel.w - 48, rh - 3)
@@ -4151,7 +4321,8 @@ class Game:
                 self.text(ACTION_LABELS[key], 24, (255, 255, 255) if sel else (205, 205, 225), (x0 + 12, y + 4), outline=sel)
                 for col in (0, 1):
                     cell = pygame.Rect(x0 + 400 + col * 210, y + 2, 190, rh - 7)
-                    lst = inp.pad[key] if pad else (inp.kb2[key] if device == 'keyboard2' else inp.kb[key])
+                    lst = ((inp.pad2[key] if device == 'gamepad2' else inp.pad[key]) if pad else
+                           (inp.kb2[key] if device == 'keyboard2' else inp.kb[key]))
                     here = sel and self.ctl_col == col
                     waiting = inp.capture and inp.capture['action'] == key and inp.capture['slot'] == col and inp.capture['device'] == device
                     pygame.draw.rect(scr, (30, 26, 44) if not here else (84, 70, 40), cell, border_radius=6)
@@ -4386,6 +4557,8 @@ class Game:
         st = self.state
         if st == 'title':
             self.draw_title()
+        elif st == 'join':
+            self.draw_join()
         elif st == 'select':
             self.draw_select()
         elif st == 'controls':
