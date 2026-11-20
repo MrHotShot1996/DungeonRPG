@@ -37,8 +37,8 @@ hero, then Player 2 (you can both pick the same one).
 | `'` or Numpad 6 (hold) | Show your stats |
 | Backspace | Pause |
 
-## Pick your hero (10 classes, 20 floors)
-Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
+## Pick your hero (8 classes, 20 floors)
+Ghala the Mage (pink!), Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
 the Shadow Ninja, the Arcane Explorer, the Wanderer (a wind swordsman),
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a

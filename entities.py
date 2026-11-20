@@ -40,7 +40,7 @@ class Entity:
 
 # ====================================================================== PLAYER
 class Player(Entity):
-    def __init__(self, cls='knight'):
+    def __init__(self, cls='mage'):
         super().__init__(0, 0, 22, 22)
         c = CLASSES[cls]
         self.cls = cls

@@ -4,7 +4,7 @@ Want a new class? Copy one of the entries below and change the numbers!
 growth = (health, damage) the hero gets AUTOMATICALLY every time they level up."""
 
 UNLOCK_LEVELS = [1, 3, 5]          # ability slot 1, 2, 3 unlock at these levels
-NO_DAMAGE = ('shield_wall', 'living_shadow')   # ranking these up only shortens their cooldown
+NO_DAMAGE = ('living_shadow',)   # ranking these up only shortens their cooldown
 ULT_UNLOCK = 8                     # a hero's ULTIMATE (4th ability, the 'ultimate' key) unlocks at this level
 ULT_MAX_RANK = 3                   # ...and can be ranked up to this
 
@@ -22,17 +22,9 @@ def unlock_level(slot):
 def slot_key(slot):
     """The input action that uses ability `slot`."""
     return f'ability{slot + 1}' if slot < 3 else 'ultimate'
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer', 'wanderer']
+CLASS_ORDER = ['mage', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer', 'wanderer']
 
 CLASSES = {
-    'knight': dict(
-        name='Knight', short='Knight', title='The Knight', color=(90, 140, 230),
-        blurb='Tough and steady. Fights up close with a big sword.',
-        hp=75, dmg=12, speed=170, crit=0.08, atk='melee', atk_cd=0.38, reach=34, hitsize=66,
-        growth=(12, 2), role='Melee tank',
-        palette=dict(armor=(70, 120, 210), trim=(55, 100, 190), legs=(70, 60, 95), helm=(150, 155, 172),
-                     plume=(200, 40, 50), head='helmet', weapon='sword'),
-        abilities=['whirlwind', 'shield_wall', 'ground_slam']),
     'mage': dict(
         name='Ghala the Mage', short='Ghala', title='Ghala the Mage', color=(255, 125, 195),
         blurb='Fragile but deadly. Shoots pink magic from far away.',
@@ -42,14 +34,6 @@ CLASSES = {
         palette=dict(armor=(240, 100, 170), trim=(212, 70, 145), legs=(125, 50, 95), helm=(255, 130, 190),
                      plume=None, head='hat', weapon='staff', orb=(255, 185, 235)),
         abilities=['frozen_heart', 'flower_ring', 'chain_lightning']),
-    'rogue': dict(
-        name='Rogue', short='Rogue', title='The Rogue', color=(90, 200, 120),
-        blurb='Super fast with sneaky tricks and lots of critical hits.',
-        hp=55, dmg=8, speed=200, crit=0.22, atk='melee', atk_cd=0.22, reach=30, hitsize=56,
-        growth=(9, 2), role='Fast assassin',
-        palette=dict(armor=(50, 95, 62), trim=(40, 72, 50), legs=(40, 40, 48), helm=(45, 78, 58),
-                     plume=None, head='hood', weapon='dagger'),
-        abilities=['knives', 'shadow_strike', 'poison_bomb']),
     'necromancer': dict(
         name='Necromancer', short='Necro', title='The Necromancer', color=(150, 120, 235),
         blurb='Raises the DEAD to fight for you. Every kill heals a little.',
@@ -114,13 +98,6 @@ CLASSES = {
 }
 
 ABILITIES = {
-    # --- Knight
-    'whirlwind': dict(name='Whirlwind', cd=6, color=(220, 230, 255), icon='swirl',
-                      desc='Spin your sword and hit every monster around you.'),
-    'shield_wall': dict(name='Shield Wall', cd=14, color=(90, 160, 255), icon='shield',
-                        desc='A magic shield blocks ALL damage for 2.5 seconds.'),
-    'ground_slam': dict(name='Ground Slam', cd=12, color=(255, 170, 80), icon='slam',
-                        desc='Smash the floor! Hurts and STUNS monsters nearby.'),
     # --- Mage
     'frozen_heart': dict(name='Frozen Heart', cd=5, color=(255, 120, 185), icon='heart',
                          desc='Throw a heart that hurts the first monster it hits and FREEZES it solid.'),
@@ -128,13 +105,6 @@ ABILITIES = {
                         desc='A ring of flowers spins around you for 6 seconds, hurting monsters it touches.'),
     'chain_lightning': dict(name='Chain Lightning', cd=9, color=(255, 240, 120), icon='bolt',
                             desc='Lightning that jumps between up to 5 monsters.'),
-    # --- Rogue
-    'knives': dict(name='Throwing Knives', cd=1, color=(205, 215, 225), icon='knives',
-                   desc='Throw a fan of 5 sharp knives.'),
-    'shadow_strike': dict(name='Shadow Strike', cd=2, color=(160, 110, 230), icon='step',
-                          desc='Zip to a monster and stab it for triple damage!'),
-    'poison_bomb': dict(name='Poison Bomb', cd=11, color=(110, 220, 90), icon='poison',
-                        desc='A green cloud that poisons monsters for 6 seconds.'),
     # --- Necromancer
     'raise_dead': dict(name='Raise Dead', cd=7, color=(130, 255, 160), icon='raise',
                        desc='Raise up to 3 fallen monsters near you as undead allies.'),

@@ -141,7 +141,7 @@ class Game:
             else os.path.dirname(os.path.abspath(__file__))
         self.audio = Audio(os.path.join(base_dir, 'audio.json'))
         self.sprites = Sprites()
-        pygame.display.set_icon(pygame.transform.smoothscale(self.sprites.player[('knight', 'down', 0)], (32, 32)))
+        pygame.display.set_icon(pygame.transform.smoothscale(self.sprites.player[(CLASS_ORDER[0], 'down', 0)], (32, 32)))
         self.fonts, self._text_cache, self._panels, self._masks = {}, {}, {}, {}
         self.icons = {n: make_icon(a['icon'], a['color']) for n, a in ABILITIES.items()}
         self.ui = {'coin': ui_icon('coin', 26), 'dash': ui_icon('dash', 26), 'dash_big': ui_icon('dash', 40)}
@@ -166,7 +166,7 @@ class Game:
         self.state = 'title'
         self.t = 0.0
         self.running = True
-        self.player = Player('knight')
+        self.player = Player(CLASS_ORDER[0])
         self.players = [self.player]           # Solo: one hero.  Duo: two (self.player is the ACTIVE one)
         self.duo = False
         self.menu_player = None                # Duo: whose ability-point / shop screen is open
@@ -1425,29 +1425,6 @@ class Game:
         out.sort(key=lambda t: t[0])
         return [e for _, e in out[:count]]
 
-    # -- Knight
-    def ab_whirlwind(self):
-        p = self.player
-        p.spin = 0.45
-        self.audio.play('whirl')
-        self.aoe(p.x, p.y, 100, self.power(1.7), knock=270, color=(220, 230, 255))
-        for pr in self.projectiles:
-            if math.hypot(pr.x - p.x, pr.y - p.y) < 100:
-                pr.alive = False
-
-    def ab_shield_wall(self):
-        p = self.player
-        p.buffs['shield'] = 2.5
-        self.audio.play('shield')
-        self.burst(p.x, p.y, (120, 180, 255), 20, 150, glow=True)
-
-    def ab_ground_slam(self):
-        p = self.player
-        self.audio.play('slam')
-        self.shake = max(self.shake, 0.4)
-        self.aoe(p.x, p.y, 150, self.power(2.0), knock=220, stun=1.5, color=(255, 170, 80))
-        self.burst(p.x, p.y, (180, 150, 120), 25, 220)
-
     # -- Mage
     def ab_frozen_heart(self):
         """Throw a heart. The first monster it hits is hurt and frozen solid for a few seconds."""
@@ -1516,54 +1493,6 @@ class Game:
         for e in hit:
             e.stun_t = 0 if e.kind in BOSS_KINDS else max(e.stun_t, 0.4)
             self.damage_enemy(e, self.power(2.0), crit=False, origin=pts[0], push=120)
-
-    # -- Rogue
-    def ab_knives(self):
-        p = self.player
-        base = self.aim_dir()
-        p.face = V2(base)
-        self.audio.play('knife')
-        for a in (-24, -12, 0, 12, 24):
-            d = base.rotate(a)
-            self.bolts.append(Bolt(p.x + d.x * 14, p.y + d.y * 14, d.x * 440, d.y * 440, self.power(0.9),
-                                   (215, 220, 230), 4, 0.9, kind='knife'))
-
-    def ab_shadow_strike(self):
-        p = self.player
-        targets = self.nearest_enemies(p.x, p.y, 280, 1)
-        if not targets:
-            self.float_text(p.x, p.y - 30, "No target!", (200, 200, 200))
-            return False
-        e = targets[0]
-        back = V2(p.x - e.x, p.y - e.y)
-        back = back.normalize() if back.length_squared() else V2(0, 1)
-        spot = None
-        for ang in (0, 90, -90, 180):
-            v = back.rotate(ang) * (e.w / 2 + 22)
-            tx, ty = e.x + v.x, e.y + v.y
-            rc = pygame.Rect(int(tx - p.w / 2), int(ty - p.h / 2), p.w, p.h)
-            if not self.dungeon.hits_wall(rc):
-                spot = (tx, ty)
-                break
-        if not spot:
-            return False
-        self.audio.play('warp')
-        self.burst(p.x, p.y, (150, 100, 220), 16, 150, glow=True)
-        p.x, p.y = spot
-        p.invuln = max(p.invuln, 0.5)
-        p.face = V2(e.x - p.x, e.y - p.y).normalize()
-        self.burst(p.x, p.y, (150, 100, 220), 16, 150, glow=True)
-        self.damage_enemy(e, self.power(3.0), crit=True, origin=(p.x, p.y))
-
-    def ab_poison_bomb(self):
-        p = self.player
-        d = self.aim_dir()
-        cx, cy = p.x + d.x * 110, p.y + d.y * 110
-        if self.dungeon.is_wall(int(cx // TILE), int(cy // TILE)):
-            cx, cy = p.x, p.y
-        self.audio.play('nova')
-        self.aoe(cx, cy, 110, self.power(0.5), knock=60, poison=self.power(0.6), poison_t=6.0, color=(110, 220, 90))
-        self.burst(cx, cy, (110, 220, 90), 35, 150, glow=True)
 
     # -- Necromancer
     def ab_raise_dead(self):
