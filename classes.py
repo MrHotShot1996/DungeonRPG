@@ -77,14 +77,14 @@ CLASSES = {
         abilities=['triple_slash', 'war_cry', 'greatblade']),
     'vampire': dict(
         name='Vampire Lord', short='Vampire', title='The Vampire Lord', color=(235, 70, 95),
-        blurb='Drinks blood to stay alive. Hides in a pool of blood and curses foes so they BURST.',
+        blurb='Spends blood to gain blood. Drains foes, then floods them with blood',
         hp=54, dmg=10, speed=170, crit=0.08, atk='ranged', atk_cd=0.42, reach=0, hitsize=0,
         dash_cd=0.9, growth=(8, 2), role='Blood caster',
         bolt=(225, 40, 65), bolt_kind='magic',
         palette=dict(armor=(74, 18, 32), trim=(190, 30, 55), legs=(34, 22, 30), helm=(30, 24, 34),
                      plume=None, head='helmet', weapon='orb', robe=True, orb=(235, 45, 70),
                      collar=(150, 20, 40), skin=(226, 222, 234)),
-        abilities=['blood_drain', 'blood_pool', 'blood_curse']),
+        abilities=['blood_drain', 'blood_pool', 'tides_of_blood'], ult='blood_curse'),
     'ninja': dict(
         name='Shadow Ninja', short='Ninja', title='The Shadow Ninja', color=(200, 208, 235),
         blurb='A silent assassin with a living SHADOW that copies his moves.',
@@ -154,11 +154,17 @@ ABILITIES = {
                             'Press again to throw 3 blade waves where you point!'),
     # --- Vampire Lord
     'blood_drain': dict(name='Blood Drain', cd=4, color=(235, 60, 85), icon='drain',
-                        desc='Suck blood from a monster in front of you. It is hurt, and the blood heals you a little.'),
+                        desc='FREE. Suck blood from a monster in front of you: it is hurt and the blood heals you. '
+                             'The lower your health, the more you drain (up to 3x the healing).'),
     'blood_pool': dict(name='Blood Pool', cd=16, color=(200, 40, 70), icon='pool',
-                       desc='Sink into a pool of blood for 2.5 seconds. You cannot be hurt, and monsters on it take damage.'),
-    'blood_curse': dict(name='Blood Curse', cd=20, color=(255, 100, 100), icon='curse',
-                        desc='Throw cursed blood. Monsters hit take 25% more damage, then BURST after 4 seconds and heal you.'),
+                       desc='Costs 15% of your health. Sink into a pool of blood for 2.5s: you cannot be hurt, '
+                            'monsters on it are hurt, and the blood flows back to heal you.'),
+    'tides_of_blood': dict(name='Tides of Blood', cd=5, color=(240, 50, 80), icon='tides',
+                           desc='Costs 7% of your health. Throw blood at EVERY monster around you. '
+                                'Each one it hits gives blood back to heal you. Short cooldown!'),
+    'blood_curse': dict(name='Blood Curse', cd=30, color=(255, 100, 100), icon='curse',
+                        desc='ULTIMATE. Costs 10% of your health. Curse every monster in a big splash: they take 25% '
+                             'more damage, then BURST after 4 seconds and heal you.'),
     # --- Shadow Ninja
     'shadow_shuriken': dict(name='Shadow Shuriken', cd=5, color=(185, 150, 255), icon='shuriken',
                             desc='Throw 3 spinning shurikens that fly THROUGH monsters. '

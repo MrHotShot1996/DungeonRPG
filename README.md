@@ -31,7 +31,7 @@ hero, then Player 2 (you can both pick the same one).
 | Arrow keys | Walk |
 | Right-Ctrl or Numpad 0 (hold) | Attack |
 | `,` `.` `/` or Numpad 1 2 3 | Abilities 1 / 2 / 3 |
-| `;` or Numpad 4 | Ultimate (Shadow Ninja) |
+| `;` or Numpad 4 | Ultimate (Shadow Ninja, Vampire Lord) |
 | Right-Shift or Numpad Enter | Dash |
 | Enter or Numpad 5 | Go down the stairs |
 | `'` or Numpad 6 (hold) | Show your stats |
@@ -43,9 +43,17 @@ the Shadow Ninja, the Arcane Explorer,
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a
 War Cry, and grows his sword with Greatblade (more damage and reach - press it again to throw blade waves).
-The Vampire Lord drains blood from monsters to heal a little (Blood Drain), sinks into a Blood Pool where nothing
-can hurt him while monsters standing on it take damage, and throws a Blood Curse: cursed monsters take 25% more
-damage from you, then burst after 4 seconds - the more you hurt them, the bigger the burst - and the burst heals you.
+The Vampire Lord spends blood to gain blood (like Vladimir in League of Legends). Every ability but the first
+COSTS a share of his current health (it can never kill him) and heals him back from what it hits:
+1. **Blood Drain** (free): hurt one monster and drink its blood. The lower his health, the more he drains (up to
+   3x the healing, and harder hits).
+2. **Blood Pool** (15% health): sink into blood for 2.5s. Nothing can hurt him, and monsters on it are hurt
+   and heal him.
+3. **Tides of Blood** (7% health, 5s cooldown): throw blood at EVERY monster around him; each hit heals him.
+4. **R - Blood Curse** (ULTIMATE at level 8, 10% health): curse every monster in a big splash. They take 25%
+   more damage, then BURST and heal him.
+His blood only comes from life a monster really had (no healing from overkill), and when one spell hits many
+monsters at once, only the first heals fully (the others at a third).
 The Arcane Explorer shoots quick golden bolts from his gauntlet. Essence Wave is a crescent that flies through
 monsters and marks them (hit a marked monster again to burst the mark), Arcane Shift blinks you forward, blasts
 monsters where you land and fires a bolt at the nearest one, and Trueshot Barrage is a HUGE crescent that crosses
@@ -120,8 +128,9 @@ Want different prices or numbers? They are all at the top of `items.py`.
 - You still get a little health back for free when you take the stairs and when you level up.
 - **Life steal limits:** you can never steal more life than a monster had left (hitting a 10-HP monster for
   500 only counts 10). With abilities, only one hit at a time heals fully: the other monsters an area attack
-  hits, and poison ticks, heal at a third. And all life stolen by abilities (Soul Drinker, Blood Drain, Blood
-  Curse) is capped at 2% of your max health per second, saved up to 12%. (The numbers are in items.py:
+  hits, and poison ticks, heal at a third. And all life stolen by abilities with the Soul Drinker item is
+  capped at 2% of your max health per second, saved up to 12%. (The Vampire's own spells don't use this cap:
+  they cost him health instead.) (The numbers are in items.py:
   ABILITY_LS_...)
 
 ## Difficulty and speed
@@ -151,7 +160,7 @@ and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
 | WASD / Arrow keys | Walk (in Duo the arrows are Player 2's) |
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
-| R | Ultimate (Shadow Ninja) |
+| R | Ultimate (Shadow Ninja, Vampire Lord) |
 | SHIFT | Dash (you can't be hurt for a moment) |
 | E | Go down the stairs |
 | TAB (hold) | Show your stats |
@@ -181,7 +190,7 @@ Works on Windows, Mac and Linux with no extra software. You do NOT need Steam or
 | Right stick | Aim (push it all the way to auto-attack) |
 | R2 or Square | Attack |
 | L1 / R1 / L2 | Ability 1 / 2 / 3 |
-| Circle | Ultimate (Shadow Ninja) |
+| Circle | Ultimate (Shadow Ninja, Vampire Lord) |
 | Cross (X) | Dash |
 | Triangle | Stairs / interact |
 | Create or Touchpad (hold) | Show stats |

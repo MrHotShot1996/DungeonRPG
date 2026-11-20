@@ -55,11 +55,20 @@ SLASH_WINDOW = 3.0                      # ...seconds you have to press it again 
 WARCRY_RADIUS, WARCRY_STUN = 125, 1.0   # Swordsman's War Cry: how wide, and how long monsters stay stunned
 BLADE_TIME = 10.0                       # Swordsman's Greatblade: how long the sword stays extended
 BLADE_DMG, BLADE_RANGE = 1.3, 1.4       # ...and how much more damage / range it gives while it lasts
-DRAIN_RANGE, DRAIN_HEAL = 280, 0.03     # Vampire Lord's Blood Drain: how far it reaches, and the heal (3% of max health)
+# Vampire Lord: every ability but Blood Drain SPENDS blood (a share of your CURRENT health - it can never kill you)
+# and gives blood back from what it hits. Blood only comes from life a monster really had (no overkill), and when
+# one spell hits many monsters at once, only the first heals fully - the others heal at VAMP_SPLASH.
+VAMP_SPLASH = 1 / 3
+DRAIN_RANGE, DRAIN_HEAL = 280, 0.03     # Blood Drain (free): how far it reaches, and the heal (3% of max health)...
+DRAIN_LOW_HEAL, DRAIN_LOW_DMG = 2.0, 0.5   # ...at 0 health it heals +200% more and hits +50% harder (in between: less)
 POOL_TIME, POOL_RADIUS, POOL_TICK = 2.5, 95, 0.5    # Blood Pool: how long, how wide, seconds between each hurt
-CURSE_THROW, CURSE_RADIUS = 130, 105    # Blood Curse: how far in front it lands, and how wide the splash is
+POOL_COST, POOL_HEAL = 0.15, 0.25       # ...costs 15% of your health; heals 25% of the damage it does
+TIDES_COST, TIDES_RANGE = 0.07, 190     # Tides of Blood: costs 7% of your health; hits every monster this close
+TIDES_HEAL, TIDES_SHOTS = 0.20, 12      # ...heals 20% of the damage; this many drops fly out when nobody is near
+CURSE_COST = 0.10                       # Blood Curse (the ultimate): costs 10% of your health
+CURSE_THROW, CURSE_RADIUS = 130, 150    # ...how far in front it lands, and how wide the splash is
 CURSE_TIME, CURSE_AMP = 4.0, 1.25       # ...seconds until cursed monsters burst, and the extra damage they take (x1.25)
-CURSE_BURST, CURSE_HEAL = 0.4, 0.12     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 12% of the burst
+CURSE_BURST, CURSE_HEAL = 0.4, 0.15     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 15% of it
 SHURIKEN_GAP = 0.06                     # Shadow Ninja's shurikens: seconds between the 3 of them (one behind another)
 SHURIKEN_FALLOFF = 0.5                  # ...every hit after the first does this much of the damage (0.5 = half)
 SHADOW_TIME, SHADOW_THROW = 5.0, 170    # Living Shadow: seconds it lasts, and how far in front of you it lands
@@ -1000,6 +1009,8 @@ class Game:
             e.kx, e.ky = d.x * amount, d.y * amount
         if e.hp <= 0:
             self.kill_enemy(e)
+        if leech and dealt > 0:                      # Vampire Lord's blood coming back (Tides of Blood)
+            self.blood_heal(dealt * leech, splash=True)
         if p.items and src not in ('ally', 'item'):  # shop item powers (last, so a blast can't kill `e` twice)
             self.item_on_hit(e, dealt, src)
         if (src in ('basic', 'ability') and e in self.enemies and getattr(e, 'essence_until', 0) > self.run_time
@@ -1761,6 +1772,41 @@ class Game:
             p.hp = min(p.max_hp, p.hp + amount)
             self.float_text(p.x, p.y - 30, f"+{amount}", (130, 255, 160))
 
+    def blood_cost(self, frac):
+        """Vampire Lord: pay a share of your CURRENT health for a spell. It can never take your last point."""
+        p = self.player
+        cost = min(int(p.hp * frac), p.hp - 1)
+        if cost <= 0:
+            return 0
+        p.hp -= cost
+        p.blood_spent = getattr(p, 'blood_spent', 0) + cost
+        self.float_text(p.x + 16, p.y - 44, f"-{cost}", (255, 90, 110))
+        for _ in range(int(6 * self.fx)):
+            self.particles.append(Particle(p.x + random.uniform(-10, 10), p.y + random.uniform(-14, 6),
+                                           random.uniform(-60, 60), random.uniform(-120, -30), 0.5, (200, 20, 45), 3))
+        return cost
+
+    def blood_heal(self, amount, splash=False):
+        """Vampire Lord: blood coming back from his spells. `splash`: when one spell hits many monsters at once,
+        only the first heals fully (the others at VAMP_SPLASH). Small bits are saved up so nothing is lost."""
+        p = self.player
+        if p.hp <= 0 or getattr(p, 'downed', False):
+            return 0
+        if splash:
+            if self.run_time >= getattr(p, 'vamp_full_until', -1.0):
+                p.vamp_full_until = self.run_time + IT.ABILITY_LS_WINDOW
+            else:
+                amount *= VAMP_SPLASH
+        p.blood_bank = getattr(p, 'blood_bank', 0.0) + amount
+        whole = int(p.blood_bank)
+        if whole <= 0:
+            return 0
+        p.blood_bank -= whole
+        before = p.hp
+        self.heal_player(whole)
+        p.blood_gained = getattr(p, 'blood_gained', 0) + (p.hp - before)
+        return p.hp - before
+
     def blood_flow(self, x, y, n):
         """Drops of blood that fly from (x, y) to the hero. Just for looks - update_blood() moves them."""
         for i in range(n):
@@ -1791,13 +1837,18 @@ class Game:
         self.zaps.append([[(e.x, e.y), (p.x, p.y)], 0.18, 0.18, (235, 40, 70)])
         self.blood_flow(e.x, e.y, 9)
         self.burst(e.x, e.y, (220, 30, 55), 12, 150, glow=True)
+        low = 1 - p.hp / max(1, p.max_hp)                     # how hurt you are (0 = full, 1 = nearly dead)
         had = max(0, e.hp)                                    # the life it had: you can't drink more than that
-        self.damage_enemy(e, self.power(1.7), knock=False)
-        self.ability_heal(min(p.max_hp * DRAIN_HEAL, had))
+        self.damage_enemy(e, self.power(1.7) * (1 + DRAIN_LOW_DMG * low), knock=False)
+        self.blood_heal(min(p.max_hp * DRAIN_HEAL * (1 + DRAIN_LOW_HEAL * low), had))
+        if low > 0.5:
+            self.float_text(e.x, e.y - 40, "THIRSTY!", (255, 80, 100))
 
     def ab_blood_pool(self):
-        """Sink into a pool of blood. Player.update() keeps you unhurtable; update_blood() hurts monsters on it."""
+        """Sink into a pool of blood. Player.update() keeps you unhurtable; update_blood() hurts monsters on it
+        (and their blood heals you). Costs some health."""
         p = self.player
+        self.blood_cost(POOL_COST)
         p.buffs['pool'] = POOL_TIME
         p.pool_tick = 0.0
         p.pooled = True
@@ -1807,10 +1858,39 @@ class Game:
         self.shockwave(p.x, p.y, POOL_RADIUS, (200, 30, 55))
         self.burst(p.x, p.y, (220, 30, 55), 26, 200, glow=True)
 
+    def ab_tides_of_blood(self):
+        """Throw blood at EVERY monster around you (that you can see). Costs a little health; each hit gives
+        blood back. (Like Vladimir's Tides of Blood.)"""
+        p = self.player
+        self.blood_cost(TIDES_COST)
+        targets = [e for e in self.enemies
+                   if math.hypot(e.x - p.x, e.y - p.y) <= TIDES_RANGE + e.w / 2
+                   and self.dungeon.line_clear(p.x, p.y, e.x, e.y)]
+        targets.sort(key=lambda e: math.hypot(e.x - p.x, e.y - p.y))
+        dmg = self.power(1.3)
+        speed = 760
+        dirs = []
+        for e in targets[:12]:                                    # one drop of blood at each monster...
+            v = V2(e.x - p.x, e.y - p.y)
+            dirs.append(v.normalize() if v.length_squared() > 1 else V2(p.face))
+        if not dirs:                                              # ...or a ring of them when nobody is near
+            dirs = [V2(1, 0).rotate(i * 360 / TIDES_SHOTS) for i in range(TIDES_SHOTS)]
+        for d in dirs:
+            self.bolts.append(Bolt(p.x + d.x * 14, p.y + d.y * 14, d.x * speed, d.y * speed, dmg, (225, 30, 60),
+                                   radius=8, life=(TIDES_RANGE + 40) / speed, kind='magic', leech=TIDES_HEAL))
+        self.audio.play('nova')
+        self.audio.play('bite')
+        self.shockwave(p.x, p.y, TIDES_RANGE, (220, 30, 60))
+        self.burst(p.x, p.y, (220, 30, 55), 30, 260, glow=True)
+        self.rumble(0.35, 120)
+        if targets:
+            self.float_text(p.x, p.y - 52, f"x{len(targets)}", (255, 120, 130))
+
     def ab_blood_curse(self):
         """Throw cursed blood in front of you. Every monster it splashes takes extra damage from you, and
-        bursts a few seconds later (update_blood() does the bursting)."""
+        bursts a few seconds later (update_blood() does the bursting). The Vampire's ULTIMATE. Costs some health."""
         p = self.player
+        self.blood_cost(CURSE_COST)
         d = self.aim_dir()
         p.face = V2(d)
         cx, cy = p.x, p.y
@@ -2140,7 +2220,16 @@ class Game:
             p.pool_tick -= dt
             if p.pool_tick <= 0:
                 p.pool_tick = POOL_TICK
-                self.aoe(p.x, p.y, POOL_RADIUS, self.power(0.7, 'blood_pool'), knock=0, slow=0.8, color=(200, 30, 55), ring=False)
+                for e in self.enemies[:]:                            # hurt + slow everything on the pool...
+                    if math.hypot(e.x - p.x, e.y - p.y) <= POOL_RADIUS + e.w / 2:
+                        e.awake = True
+                        e.slow_t = max(e.slow_t, 0.8)
+                        dealt = self.damage_enemy(e, self.power(0.7, 'blood_pool'), crit=False, origin=(p.x, p.y),
+                                                  push=0)
+                        if dealt:                                        # ...and its blood flows back to you
+                            self.blood_heal(dealt * POOL_HEAL, splash=True)
+                            if random.random() < 0.5:
+                                self.blood_flow(e.x, e.y, 2)
             if random.random() < 0.5 * self.fx:
                 a, r = random.random() * 6.283, random.random() * POOL_RADIUS * 0.85
                 self.particles.append(Particle(p.x + math.cos(a) * r, p.y + math.sin(a) * r, 0, -30, 0.45,
@@ -2160,7 +2249,7 @@ class Game:
             e.curse_t -= dt
             if e.curse_t > 0:
                 continue
-            dmg = int(self.power(1.5, 'blood_curse') + e.curse_dmg * CURSE_BURST)
+            dmg = int(self.power(2.2, 'blood_curse') + e.curse_dmg * CURSE_BURST)
             e.curse_t, e.curse_dmg = 0.0, 0.0
             bursts += 1
             self.shockwave(e.x, e.y, 55, (235, 40, 70))
@@ -2171,7 +2260,7 @@ class Game:
             self.audio.play('boom')
             self.shake = max(self.shake, 0.35)
             self.rumble(0.7, 240)
-            self.ability_heal(total * CURSE_HEAL)
+            self.blood_heal(total * CURSE_HEAL)
         # --- drops of blood flying home, and splashes fading on the floor
         for dr in self.drops[:]:
             if dr[2] > 0:

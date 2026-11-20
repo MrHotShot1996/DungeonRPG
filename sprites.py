@@ -957,6 +957,14 @@ def make_icon(icon, color, size=56):
             for dx in (-5, 5):
                 P.polygon(s, w, [(cx + L(dx) - L(3), cy - r - L(6)), (cx + L(dx) + L(3), cy - r - L(6)),
                                  (cx + L(dx), cy - r + L(4))])
+    elif icon == 'tides':                               # drops of blood flying out of a heart
+        for ang in range(0, 360, 45):
+            a = math.radians(ang + 22)
+            x, y = cx + math.cos(a) * (r + L(2)), cy + math.sin(a) * (r + L(2))
+            P.circle(s, c, (int(x), int(y)), L(4))
+            P.line(s, c, (cx + math.cos(a) * L(9), cy + math.sin(a) * L(9)), (x, y), L(2))
+        P.circle(s, c, (cx, cy), L(9))
+        P.circle(s, w, (cx - L(3), cy - L(3)), L(3))
     elif icon == 'pool':
         P.ellipse(s, c, (cx - r - L(4), cy - L(4), 2 * r + L(8), r + L(8)))
         P.ellipse(s, w, (cx - r - L(4), cy - L(4), 2 * r + L(8), r + L(8)), L(2))
