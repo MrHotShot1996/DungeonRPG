@@ -268,6 +268,13 @@ class Sprites:
                 pygame.draw.polygon(s, pal['helm'], [(hx - 4, 7), (hx, hy), (hx + 4, 7)])
             if d == 'down':
                 pygame.draw.rect(s, pal['helm'], (11, 6, 18, 4), border_radius=2)
+        if head == 'topknot':                              # tied-up hair with a long tail behind
+            pygame.draw.rect(s, pal['helm'], (11, 4, 18, 6), border_radius=3)
+            pygame.draw.circle(s, pal['helm'], (20, 2), 3)
+            tail_x = 30 if d in ('left', 'down') else 10
+            if d != 'up':
+                pygame.draw.line(s, pal['helm'], (20, 3), (tail_x, 12), 3)
+            pygame.draw.rect(s, (200, 60, 60), (18, 4, 4, 2))
         if head == 'hat':
             pygame.draw.polygon(s, pal['helm'], [(10, 9), (30, 9), (24, -1)])
             pygame.draw.rect(s, pal['trim'], (8, 8, 24, 3), border_radius=1)
@@ -301,6 +308,15 @@ class Sprites:
                 pygame.draw.circle(s, (*orb, 90), (cx, cy), 6)
                 pygame.draw.circle(s, BONE, (cx, cy), 4)
                 s.fill((20, 20, 30), (cx - 2, cy - 1, 1, 2)); s.fill((20, 20, 30), (cx + 1, cy - 1, 1, 2))
+        elif w == 'katana':                               # a long, thin, slightly curved blade
+            if vertical:
+                pygame.draw.line(s, (220, 226, 236), (33, 4), (34, 26), 2)
+                pygame.draw.rect(s, (40, 40, 52), (32, 25, 4, 6))
+                pygame.draw.rect(s, (200, 170, 70), (30, 24, 8, 2))
+            else:
+                pygame.draw.line(s, (220, 226, 236), (27, 20), (40, 18), 2)
+                pygame.draw.rect(s, (40, 40, 52), (22, 19, 6, 3))
+                pygame.draw.rect(s, (200, 170, 70), (27, 17, 2, 7))
         elif w == 'dagger':
             if vertical:
                 pygame.draw.rect(s, (210, 215, 225), (32, 19, 2, 8)); pygame.draw.rect(s, (120, 80, 40), (30, 26, 6, 2))
@@ -957,6 +973,24 @@ def make_icon(icon, color, size=56):
             for dx in (-5, 5):
                 P.polygon(s, w, [(cx + L(dx) - L(3), cy - r - L(6)), (cx + L(dx) + L(3), cy - r - L(6)),
                                  (cx + L(dx), cy - r + L(4))])
+    elif icon == 'thrust':                              # a blade stabbing forward with wind lines
+        P.line(s, w, (cx - r, cy + r // 2), (cx + r + L(4), cy - r // 2), L(4))
+        P.polygon(s, w, [(cx + r + L(8), cy - r // 2 - L(2)), (cx + r - L(2), cy - r // 2 - L(6)),
+                         (cx + r, cy - r // 2 + L(4))])
+        for k in (-1, 1):
+            P.line(s, c, (cx - r, cy + k * L(9)), (cx - L(2), cy + k * L(9) - L(3)), L(2))
+    elif icon == 'windwall':                            # a curved wall of wind
+        for k in range(3):
+            x = cx - L(8) + k * L(8)
+            P.arc(s, c if k != 1 else w, (x - L(6), cy - r, L(12), 2 * r), -1.2, 1.2, L(3))
+    elif icon == 'cyclone':                             # a swirl
+        for k in range(3):
+            rr = r - k * L(6)
+            P.arc(s, c if k % 2 == 0 else w, (cx - rr, cy - rr, 2 * rr, 2 * rr), 0.4 + k, 4.6 + k, L(3))
+    elif icon == 'storm':                               # a blade over a gust: the ultimate
+        P.arc(s, c, (cx - r, cy - r // 2, 2 * r, r + L(6)), 3.4, 6.0, L(3))
+        P.line(s, w, (cx - r + L(4), cy + r - L(2)), (cx + r - L(2), cy - r + L(2)), L(4))
+        P.circle(s, c, (cx + r - L(2), cy - r + L(2)), L(4))
     elif icon == 'tides':                               # drops of blood flying out of a heart
         for ang in range(0, 360, 45):
             a = math.radians(ang + 22)

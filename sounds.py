@@ -187,6 +187,8 @@ class Audio:
             'levelup2': concat(*[T(f, .12, 'square', .22) for f in (392, 494, 587, 784)], T(988, .25, 'square', .22),
                                T(1175, .5, 'sine', .3)),
             'boss': layer(T(60, 1.0, 'saw', .5, slide=20), T(0, 1.0, 'noise', .15)),
+            'wind': layer(T(0, .35, 'noise', .28, decay=1.5), T(420, .3, 'sine', .18, slide=-260)),
+            'tornado': layer(T(0, .6, 'noise', .3), T(180, .6, 'tri', .25, slide=420)),
         }
         for k, v in d.items():
             self.sfx[k] = self._to_sound(v)

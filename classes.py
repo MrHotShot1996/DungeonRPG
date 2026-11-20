@@ -22,7 +22,7 @@ def unlock_level(slot):
 def slot_key(slot):
     """The input action that uses ability `slot`."""
     return f'ability{slot + 1}' if slot < 3 else 'ultimate'
-CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer']
+CLASS_ORDER = ['knight', 'mage', 'rogue', 'necromancer', 'monk', 'swordsman', 'vampire', 'ninja', 'explorer', 'wanderer']
 
 CLASSES = {
     'knight': dict(
@@ -103,6 +103,14 @@ CLASSES = {
         palette=dict(armor=(52, 92, 168), trim=(214, 170, 70), legs=(92, 70, 52), helm=(246, 214, 120),
                      plume=None, head='hair', weapon='gauntlet', orb=(255, 228, 120)),
         abilities=['essence_wave', 'arcane_shift', 'trueshot']),
+    'wanderer': dict(
+        name='Wanderer', short='Wanderer', title='The Wanderer', color=(150, 215, 255),
+        blurb='A wind swordsman. Throws tornados, blocks arrows, and keeps foes up in the air.',
+        hp=56, dmg=10, speed=195, crit=0.15, atk='melee', atk_cd=0.3, reach=34, hitsize=62,
+        growth=(9, 2), role='Wind swordsman',
+        palette=dict(armor=(54, 92, 150), trim=(225, 232, 242), legs=(40, 44, 62), helm=(46, 34, 30),
+                     plume=None, head='topknot', weapon='katana', collar=(150, 190, 230)),
+        abilities=['wind_thrust', 'gale_wall', 'cyclone_spin'], ult='storm_breaker'),
 }
 
 ABILITIES = {
@@ -165,6 +173,19 @@ ABILITIES = {
     'blood_curse': dict(name='Blood Curse', cd=30, color=(255, 100, 100), icon='curse',
                         desc='ULTIMATE. Costs 10% of your health. Curse every monster in a big splash: they take 25% '
                              'more damage, then BURST after 4 seconds and heal you.'),
+    # --- Wanderer
+    'wind_thrust': dict(name='Wind Thrust', cd=2.5, color=(170, 225, 255), icon='thrust',
+                        desc='A quick stab in front of you. Hit with 2 stabs and the NEXT one throws a TORNADO '
+                             'that flies forward and knocks monsters into the air.'),
+    'gale_wall': dict(name='Gale Wall', cd=18, color=(200, 240, 255), icon='windwall',
+                      desc='Raise a wall of wind in front of you for 4 seconds. It blows away every monster shot '
+                           'that tries to cross it.'),
+    'cyclone_spin': dict(name='Cyclone Spin', cd=8, color=(140, 210, 255), icon='cyclone',
+                         desc='Spin in place in a circle of wind: hurts every monster around you and knocks them '
+                              'into the air.'),
+    'storm_breaker': dict(name='Storm Breaker', cd=35, color=(120, 200, 255), icon='storm',
+                          desc='ULTIMATE. Blink to a monster that is in the AIR and keep it - and every airborne '
+                               'monster near it - up there while you slash them. You cannot be hurt meanwhile.'),
     # --- Shadow Ninja
     'shadow_shuriken': dict(name='Shadow Shuriken', cd=5, color=(185, 150, 255), icon='shuriken',
                             desc='Throw 3 spinning shurikens that fly THROUGH monsters. '

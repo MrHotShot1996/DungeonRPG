@@ -69,6 +69,16 @@ CURSE_COST = 0.10                       # Blood Curse (the ultimate): costs 10% 
 CURSE_THROW, CURSE_RADIUS = 130, 150    # ...how far in front it lands, and how wide the splash is
 CURSE_TIME, CURSE_AMP = 4.0, 1.25       # ...seconds until cursed monsters burst, and the extra damage they take (x1.25)
 CURSE_BURST, CURSE_HEAL = 0.4, 0.15     # ...the burst adds 40% of the damage you dealt meanwhile; you heal 15% of it
+# Wanderer (a wind swordsman)
+KNOCKUP_BOSS = 0.4                      # bosses are only knocked up this much as long (they are heavy)
+THRUST_RANGE, THRUST_WIDTH = 125, 26    # Wind Thrust: how far the stab reaches, and how wide it is (each side)
+THRUST_STACK_TIME = 6.0                 # ...2 stabs that hit within this many seconds charge up the TORNADO
+TORNADO_SPEED, TORNADO_RANGE = 540, 430 # ...the tornado: how fast and how far it flies
+TORNADO_RADIUS, TORNADO_KNOCKUP = 24, 1.0   # ...how wide it is, and seconds the monsters it hits stay in the air
+WALL_TIME, WALL_HALF, WALL_AHEAD = 4.0, 100, 70   # Gale Wall: seconds it lasts, half its length, how far in front
+SPIN_RADIUS, SPIN_KNOCKUP = 120, 0.9    # Cyclone Spin: how wide, and seconds the monsters stay in the air
+STORM_RANGE, STORM_RADIUS = 450, 230    # Storm Breaker: how far you can blink to an airborne monster, and how close
+STORM_HOLD, STORM_HITS = 1.2, 3         # ...other airborne ones must be; seconds you keep them up; slashes meanwhile
 SHURIKEN_GAP = 0.06                     # Shadow Ninja's shurikens: seconds between the 3 of them (one behind another)
 SHURIKEN_FALLOFF = 0.5                  # ...every hit after the first does this much of the damage (0.5 = half)
 SHADOW_TIME, SHADOW_THROW = 5.0, 170    # Living Shadow: seconds it lasts, and how far in front of you it lands
@@ -230,6 +240,7 @@ class Game:
         self.sweeps = []                                  # the Swordsman's sword arcs (just for looks)
         self.drops = []                                   # Vampire Lord: blood flying back to you
         self.splashes = []                                # ...and the blood thrown on the floor by Blood Curse
+        self.windwalls = []                               # the Wanderer's Gale Walls (they block monster shots)
         self.shadow = None                                # Shadow Ninja: the Living Shadow (a dict) while it is out
         self.ult_shadow = None                            # ...and the shadow Death Mark leaves behind
         self.particles, self.texts, self.rings, self.zaps, self.corpses, self.flashes = [], [], [], [], [], []
@@ -2055,6 +2066,218 @@ class Game:
             return False
         return True
 
+    # -- the Wanderer (a wind swordsman, like Yasuo)
+    def knock_up(self, e, secs):
+        """Throw a monster into the air: it can't move or attack until it lands. Bosses only briefly."""
+        if e not in self.enemies:
+            return
+        if e.kind in BOSS_KINDS:
+            secs *= KNOCKUP_BOSS
+        if secs > e.air_t:
+            e.air_t = e.air_max = secs
+        e.awake = True
+        e.kx = e.ky = 0.0
+        self.burst(e.x, e.y + e.h / 2, (215, 240, 255), 8, 110, glow=True)
+
+    def air_lift(self, e):
+        """How high (pixels) a knocked-up monster is drawn."""
+        if e.air_t <= 0:
+            return 0
+        if e.held_until > self.run_time:                    # kept up by Storm Breaker
+            return 38 + int(3 * math.sin(self.t * 9 + e.anim))
+        k = 1 - e.air_t / max(0.01, e.air_max)
+        return int(36 * math.sin(math.pi * max(0.0, min(1.0, k))))
+
+    def thrust_hits(self, d):
+        """The monsters in front of you that a stab reaches."""
+        p = self.player
+        out = []
+        for e in self.enemies:
+            dx, dy = e.x - p.x, e.y - p.y
+            along = dx * d.x + dy * d.y
+            side = abs(dx * d.y - dy * d.x)
+            if -e.w / 2 <= along <= THRUST_RANGE + e.w / 2 and side <= THRUST_WIDTH + e.w / 2 \
+                    and self.dungeon.line_clear(p.x, p.y, e.x, e.y):
+                out.append(e)
+        return out
+
+    def ab_wind_thrust(self):
+        """Stab forward. Two stabs that hit charge it: the third throws a TORNADO that knocks monsters up."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        p.swing = 0.15
+        if p.q_stacks >= 2:                                   # charged: the tornado!
+            p.q_stacks, p.q_stack_t = 0, 0.0
+            self.bolts.append(Bolt(p.x + d.x * 20, p.y + d.y * 20, d.x * TORNADO_SPEED, d.y * TORNADO_SPEED,
+                                   self.power(1.2), (190, 235, 255), radius=TORNADO_RADIUS,
+                                   life=TORNADO_RANGE / TORNADO_SPEED, pierce=True, kind='tornado',
+                                   knockup=TORNADO_KNOCKUP))
+            self.audio.play('tornado')
+            self.shake = max(self.shake, 0.12)
+            self.burst(p.x + d.x * 24, p.y + d.y * 24, (210, 240, 255), 18, 200, glow=True)
+            return
+        self.audio.play('swing')
+        self.audio.play('wind')
+        tip = (p.x + d.x * THRUST_RANGE, p.y + d.y * THRUST_RANGE)
+        self.zaps.append([[(p.x + d.x * 18, p.y + d.y * 18), tip], 0.12, 0.12, (210, 240, 255)])
+        for k in range(int(8 * self.fx)):
+            f = random.uniform(0.3, 1.0)
+            self.particles.append(Particle(p.x + d.x * THRUST_RANGE * f, p.y + d.y * THRUST_RANGE * f,
+                                           d.x * 160, d.y * 160, 0.25, (200, 235, 255), 3, True))
+        hit = self.thrust_hits(d)
+        for e in hit:
+            self.damage_enemy(e, self.power(1.1), origin=(p.x, p.y), push=120)
+        if hit:
+            p.q_stacks = min(2, p.q_stacks + 1)
+            p.q_stack_t = THRUST_STACK_TIME
+            if p.q_stacks == 2:
+                self.float_text(p.x, p.y - 44, "TORNADO READY!", (170, 230, 255), big=True)
+
+    def ab_gale_wall(self):
+        """A wall of wind in front of you that blows away monster shots for a few seconds."""
+        p = self.player
+        d = self.aim_dir()
+        p.face = V2(d)
+        cx, cy = p.x + d.x * WALL_AHEAD, p.y + d.y * WALL_AHEAD
+        side = V2(-d.y, d.x)
+        self.windwalls.append(dict(x=cx, y=cy, ax=cx - side.x * WALL_HALF, ay=cy - side.y * WALL_HALF,
+                                   bx=cx + side.x * WALL_HALF, by=cy + side.y * WALL_HALF, d=V2(d),
+                                   t=WALL_TIME, born=WALL_TIME))
+        self.audio.play('wind')
+        self.audio.play('shield')
+        self.burst(cx, cy, (210, 240, 255), 22, 180, glow=True)
+
+    @staticmethod
+    def _cross(ax, ay, bx, by, cx, cy, dx, dy):
+        """Do segments A-B and C-D cross?"""
+        def orient(px, py, qx, qy, rx, ry):
+            return (qx - px) * (ry - py) - (qy - py) * (rx - px)
+        o1, o2 = orient(ax, ay, bx, by, cx, cy), orient(ax, ay, bx, by, dx, dy)
+        o3, o4 = orient(cx, cy, dx, dy, ax, ay), orient(cx, cy, dx, dy, bx, by)
+        return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+    def wall_blocks(self, x0, y0, x1, y1):
+        """Did a shot flying from (x0, y0) to (x1, y1) run into a Gale Wall?"""
+        for w in self.windwalls:
+            if self._cross(w['ax'], w['ay'], w['bx'], w['by'], x0, y0, x1, y1):
+                return True
+            # (also catch a shot that is ON the wall - e.g. a slow one that started right at it)
+            wx, wy = w['bx'] - w['ax'], w['by'] - w['ay']
+            L2 = wx * wx + wy * wy or 1
+            k = max(0.0, min(1.0, ((x1 - w['ax']) * wx + (y1 - w['ay']) * wy) / L2))
+            if math.hypot(x1 - (w['ax'] + wx * k), y1 - (w['ay'] + wy * k)) < 6:
+                return True
+        return False
+
+    def update_windwalls(self, dt):
+        for w in self.windwalls[:]:
+            w['t'] -= dt
+            if w['t'] <= 0:
+                self.windwalls.remove(w)
+                continue
+            if random.random() < 0.6 * self.fx:
+                k = random.random()
+                x, y = w['ax'] + (w['bx'] - w['ax']) * k, w['ay'] + (w['by'] - w['ay']) * k
+                self.particles.append(Particle(x, y, w['d'].x * 40, w['d'].y * 40 - 30, 0.5, (210, 240, 255), 3, True))
+
+    def ab_cyclone_spin(self):
+        """Spin in a circle of wind: hurts every monster around you and knocks them into the air."""
+        p = self.player
+        p.spin = 0.45
+        self.audio.play('whirl')
+        self.audio.play('tornado')
+        self.shockwave(p.x, p.y, SPIN_RADIUS, (200, 235, 255))
+        self.burst(p.x, p.y, (210, 240, 255), 26, 220, glow=True)
+        dmg = self.power(1.3)
+        n = 0
+        for e in self.enemies[:]:
+            if math.hypot(e.x - p.x, e.y - p.y) <= SPIN_RADIUS + e.w / 2:
+                self.damage_enemy(e, dmg, origin=(p.x, p.y), push=0)
+                if e in self.enemies:
+                    self.knock_up(e, SPIN_KNOCKUP)
+                    n += 1
+        if n:
+            self.float_text(p.x, p.y - 46, "AIRBORNE!", (190, 230, 255), big=True)
+
+    def airborne_near(self, x, y, radius):
+        return [e for e in self.enemies if e.air_t > 0 and math.hypot(e.x - x, e.y - y) <= radius]
+
+    def ab_storm_breaker(self):
+        """ULTIMATE: blink to a monster in the air and keep it (and every airborne monster near it) up there,
+        slashing them. You can't be hurt while it lasts."""
+        p = self.player
+        air = self.airborne_near(p.x, p.y, STORM_RANGE)
+        if not air:
+            self.float_text(p.x, p.y - 34, "Nobody is in the air!", (200, 220, 240))
+            self.audio.play('deflect')
+            return False                                     # (no cooldown)
+        face, who = self.aim_pick()
+        def score(e):                                        # the one you aim at first, then the nearest
+            v = V2(e.x - p.x, e.y - p.y)
+            ang = abs((V2(face).angle_to(v) + 180) % 360 - 180) if v.length_squared() > 1 else 0
+            return v.length() + ang * 2.5
+        tgt = who if who in air else min(air, key=score)
+        group = [e for e in air if math.hypot(e.x - tgt.x, e.y - tgt.y) <= STORM_RADIUS]
+        sx, sy = p.x, p.y
+        x, y = self.death_landing(tgt, sx, sy)
+        for k in range(6):
+            f = (k + 1) / 7
+            self.trail.append([sx + (x - sx) * f, sy + (y - sy) * f, p.dir_name, 0.22])
+        p.x, p.y = x, y
+        p.kx = p.ky = 0.0
+        p.dash_t = 0.0
+        v = V2(tgt.x - p.x, tgt.y - p.y)
+        if v.length_squared() > 1:
+            p.face = v.normalize()
+        for e in group:
+            e.air_t = e.air_max = STORM_HOLD + 0.3
+            e.held_until = self.run_time + STORM_HOLD
+        p.buffs['storm'] = STORM_HOLD
+        p.invuln = max(p.invuln, STORM_HOLD + 0.3)
+        p.storm = dict(targets=group, hits=STORM_HITS, next=STORM_HOLD / STORM_HITS)   # (last slash at the end)
+        self.audio.play('warp')
+        self.audio.play('tornado')
+        self.shake = max(self.shake, 0.3)
+        self.hitstop = max(self.hitstop, 0.05)
+        self.shockwave(tgt.x, tgt.y, 70, (170, 225, 255))
+        self.float_text(tgt.x, tgt.y - 60, "STORM BREAKER!", (170, 230, 255), big=True)
+
+    def update_wanderer(self, dt):
+        """The Wanderer's timers: his tornado charge fading, and Storm Breaker's slashes."""
+        p = self.player
+        if p.q_stacks:
+            p.q_stack_t -= dt
+            if p.q_stack_t <= 0:
+                p.q_stacks, p.q_stack_t = 0, 0.0
+        st = p.storm
+        if not st:
+            return
+        st['next'] -= dt
+        if st['next'] > 0:
+            return
+        st['hits'] -= 1
+        st['next'] = STORM_HOLD / STORM_HITS
+        last = st['hits'] <= 0
+        dmg = self.power(1.6 if last else 0.9, 'storm_breaker')
+        self.audio.play('swing')
+        for e in st['targets'][:]:
+            if e not in self.enemies:
+                continue
+            a = random.uniform(0, 6.28)
+            self.zaps.append([[(e.x + math.cos(a) * 34, e.y - 30 + math.sin(a) * 34),
+                               (e.x - math.cos(a) * 34, e.y - 30 - math.sin(a) * 34)], 0.1, 0.1, (220, 245, 255)])
+            self.damage_enemy(e, dmg, knock=False, crit=True if last else None)
+        if last:                                             # the final slash: they all crash down
+            p.storm = None
+            self.shake = max(self.shake, 0.35)
+            self.rumble(0.8, 260)
+            for e in st['targets']:
+                if e in self.enemies:
+                    e.held_until = 0.0
+                    e.air_t = e.air_max = 0.2
+                    self.burst(e.x, e.y + e.h / 2, (200, 235, 255), 12, 160, glow=True)
+
     # -- Shadow Ninja's ULTIMATE: Death Mark
     def death_target(self):
         """The monster Death Mark goes for: the one you aim at, or else the nearest one you can see (in range)."""
@@ -2467,9 +2690,15 @@ class Game:
                                         else self.player):
                         m.update(dt, self)
             for pr in self.projectiles[:]:
+                ox, oy = pr.x, pr.y
                 pr.update(dt, self)
+                if pr.alive and self.windwalls and self.wall_blocks(ox, oy, pr.x, pr.y):
+                    pr.alive = False                    # blown away by a Gale Wall
+                    self.burst(pr.x, pr.y, (200, 240, 255), 8, 140, glow=True)
+                    self.audio.play('deflect')
                 if not pr.alive:
                     self.projectiles.remove(pr)
+            self.update_windwalls(dt)
             for q in self.players:                      # each hero's own shots, shadows, blood...
                 with self.as_player(q):
                     for b in self.bolts[:]:
@@ -2518,6 +2747,8 @@ class Game:
             return
         p.update(dt, self.input, self)
         self.update_flowers()
+        if p.cls == 'wanderer':
+            self.update_wanderer(dt)
 
     def tether(self, before):
         """Duo: both heroes share one screen, so neither may WALK so far from the other that they'd leave it.
@@ -3283,6 +3514,10 @@ class Game:
         lift = FLYERS.get(o.kind, 0)
         if lift:
             lift += int(3 * math.sin(o.anim * 6))
+        air = self.air_lift(o)                               # knocked into the air by the Wanderer
+        if air:
+            lift += air
+            pygame.draw.ellipse(scr, (200, 235, 255), (sx - o.w // 2 - 4, int(sy + o.h / 2) - 4, o.w + 8, 9), 2)
         feet = sy + o.h / 2 + 2 - lift
         scr.blit(img, (int(sx - img.get_width() // 2), int(feet + pad - img.get_height())))
         top = feet + pad - img.get_height()
@@ -3560,6 +3795,20 @@ class Game:
                     self.add_glow(sx, sy, 46, (90, 255, 160), 0.6)
                     lights.append((o.x, o.y, 70, (90, 255, 160), 0.2, 0.25))
 
+        for w in self.windwalls:                                             # Gale Walls
+            k = min(1.0, w['t'] / 0.4, (w['born'] - w['t']) / 0.15 + 0.2)
+            a = (int(w['ax'] - cx), int(w['ay'] - cy))
+            b = (int(w['bx'] - cx), int(w['by'] - cy))
+            pygame.draw.line(scr, tuple(int(c * k) for c in (120, 180, 230)), a, b, 9)
+            pygame.draw.line(scr, tuple(int(c * k) for c in (225, 245, 255)), a, b, 3)
+            for j in range(6):                                               # little gusts running along it
+                f = (t * 0.9 + j / 6) % 1.0
+                x = a[0] + (b[0] - a[0]) * f
+                y = a[1] + (b[1] - a[1]) * f
+                pygame.draw.circle(scr, (235, 250, 255), (int(x - w['d'].x * 4), int(y - w['d'].y * 4)), 3)
+            mx, my = (a[0] + b[0]) // 2, (a[1] + b[1]) // 2
+            self.add_glow(mx, my, 120, (180, 225, 255), 0.6 * k)
+            lights.append((w['x'], w['y'], 160, (180, 225, 255), 0.35 * k, 0.3 * k))
         # --- attack effects (each hero's)
         for p in self.players:
           self.switch_to(p)
@@ -3662,6 +3911,16 @@ class Game:
                     pygame.draw.lines(scr, col, False, pts, wd)
                 self.add_glow(sx, sy, 150 if big else 56, b.color, 1.3 if big else 0.9)
                 lights.append((b.x, b.y, 220 if big else 90, b.color, 0.7 if big else 0.45, 0.6 if big else 0.4))
+            elif b.kind == 'tornado':                                        # the Wanderer's tornado: a spinning funnel
+                for k in range(5):
+                    yy = sy + 14 - k * 9
+                    rw = 8 + k * 5
+                    a0 = t * 20 + k
+                    rect = (sx - rw, yy - 4, 2 * rw, 9)
+                    pygame.draw.arc(scr, b.color, rect, a0, a0 + 4.2, 2)
+                    pygame.draw.arc(scr, (255, 255, 255), rect, a0 + 3.4, a0 + 4.6, 1)
+                self.add_glow(sx, sy, 70, b.color, 0.7)
+                lights.append((b.x, b.y, 110, b.color, 0.45, 0.3))
             elif b.kind == 'shuriken':                                       # a spinning 4-point star
                 a0 = t * 26
                 pts = [(sx + math.cos(a0 + i * 0.7854) * (b.radius + 3 if i % 2 == 0 else b.radius * 0.36),
@@ -4077,6 +4336,16 @@ class Game:
             if names[i] == 'greatblade' and self.blade_on():                   # how long the big sword lasts
                 self.text(f"{p.buffs['greatblade']:.0f}s", 20, (190, 245, 255), (x0 + i * 76 + 33, y0 - 12),
                           center=True, outline=True)
+            if (names[i] == 'storm_breaker' and not locked and p.ability_cd[i] <= 0 and int(self.t * 5) % 2
+                    and self.airborne_near(p.x, p.y, STORM_RANGE)):          # somebody is in the air: GO!
+                pygame.draw.rect(scr, (170, 230, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
+            if names[i] == 'wind_thrust':                                      # the tornado charge: 2 dots
+                for k in range(2):
+                    on = k < p.q_stacks
+                    pygame.draw.circle(scr, (190, 235, 255) if on else (60, 66, 84),
+                                       (x0 + i * 76 + 25 + k * 16, y0 - 8), 5)
+                if p.q_stacks >= 2 and int(self.t * 6) % 2:
+                    pygame.draw.rect(scr, (190, 235, 255), (x0 + i * 76 - 2, y0 - 2, 70, 70), 3, border_radius=10)
             if names[i] == 'death_mark' and self.ult_shadow:
                 self.text(f"{max(0.0, self.ult_shadow['t']):.1f}s", 20, (255, 150, 160), (x0 + i * 76 + 33, y0 - 12),
                           center=True, outline=True)
@@ -4279,8 +4548,12 @@ class Game:
                 pygame.draw.rect(scr, (230, 225, 210), (r.x + 58, yy + 3, r.w - 72, 12), 1, border_radius=5)
             self.text(f"Crit {int(c['crit'] * 100)}%  -  {'Ranged' if c['atk'] == 'ranged' else 'Melee'}", 20,
                       (255, 235, 160), (r.centerx, r.y + 272), center=True)
-            for j, line in enumerate(self.wrap(c['blurb'], 20, r.w - 24)[:5]):
-                self.text(line, 20, (200, 200, 225), (r.x + 12, r.y + 292 + j * 18), shadow=False)
+            for fs in (20, 18, 17, 16, 15):                  # (a smaller font if the card is too narrow for it)
+                lines = self.wrap(c['blurb'], fs, r.w - 20)
+                if len(lines) * (fs - 2) <= 96:
+                    break
+            for j, line in enumerate(lines[:96 // (fs - 2)]):
+                self.text(line, fs, (200, 200, 225), (r.x + 10, r.y + 292 + j * (fs - 2)), shadow=False)
         key = CLASS_ORDER[self.sel]
         c = CLASSES[key]
         self.panel((29, 500, 1222, 186), alpha=225, border=c['color'])

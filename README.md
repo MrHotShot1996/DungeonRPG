@@ -31,15 +31,15 @@ hero, then Player 2 (you can both pick the same one).
 | Arrow keys | Walk |
 | Right-Ctrl or Numpad 0 (hold) | Attack |
 | `,` `.` `/` or Numpad 1 2 3 | Abilities 1 / 2 / 3 |
-| `;` or Numpad 4 | Ultimate (Shadow Ninja, Vampire Lord) |
+| `;` or Numpad 4 | Ultimate (Shadow Ninja, Vampire Lord, Wanderer) |
 | Right-Shift or Numpad Enter | Dash |
 | Enter or Numpad 5 | Go down the stairs |
 | `'` or Numpad 6 (hold) | Show your stats |
 | Backspace | Pause |
 
-## Pick your hero (9 classes, 20 floors)
+## Pick your hero (10 classes, 20 floors)
 Knight, Ghala the Mage (pink!), Rogue, Necromancer (raises the dead), the Exiled Swordsman, the Vampire Lord,
-the Shadow Ninja, the Arcane Explorer,
+the Shadow Ninja, the Arcane Explorer, the Wanderer (a wind swordsman),
 Monk (fast martial artist - throws an orb that sticks to a monster; press the ability again to launch yourself at it).
 The Exiled Swordsman chains a Triple Slash (press the ability up to 3 times), stuns everything around him with a
 War Cry, and grows his sword with Greatblade (more damage and reach - press it again to throw blade waves).
@@ -54,6 +54,14 @@ COSTS a share of his current health (it can never kill him) and heals him back f
    more damage, then BURST and heal him.
 His blood only comes from life a monster really had (no healing from overkill), and when one spell hits many
 monsters at once, only the first heals fully (the others at a third).
+The Wanderer is a wind swordsman (like Yasuo in League of Legends):
+1. **Wind Thrust**: a quick stab in front of him. Two stabs that HIT charge it (two dots over the slot), and the
+   next one throws a TORNADO that flies forward through monsters and knocks them into the air.
+2. **Gale Wall**: a wall of wind in front of him for 4 seconds that blows away every monster shot crossing it.
+3. **Cyclone Spin**: spins in a circle of wind, hurting everything around him and knocking it into the air.
+4. **R - Storm Breaker** (ULTIMATE, level 8): blink to a monster that is IN THE AIR (its slot flashes when one is
+   in reach) and keep it - and every airborne monster near it - up there for 1.2s while he slashes them three
+   times. He can't be hurt meanwhile. Knocked-up monsters can't move or attack; bosses only go up briefly.
 The Arcane Explorer shoots quick golden bolts from his gauntlet. Essence Wave is a crescent that flies through
 monsters and marks them (hit a marked monster again to burst the mark), Arcane Shift blinks you forward, blasts
 monsters where you land and fires a bolt at the nearest one, and Trueshot Barrage is a HUGE crescent that crosses
@@ -160,7 +168,7 @@ and AI_SMARTS_FULL_FLOOR picks the floor where they reach full cleverness.
 | WASD / Arrow keys | Walk (in Duo the arrows are Player 2's) |
 | SPACE (hold) | Attack |
 | 1 / 2 / 3 | Use abilities |
-| R | Ultimate (Shadow Ninja, Vampire Lord) |
+| R | Ultimate (Shadow Ninja, Vampire Lord, Wanderer) |
 | SHIFT | Dash (you can't be hurt for a moment; once every 4 seconds - DASH_COOLDOWN in settings.py) |
 | E | Go down the stairs |
 | TAB (hold) | Show your stats |
@@ -190,7 +198,7 @@ Works on Windows, Mac and Linux with no extra software. You do NOT need Steam or
 | Right stick | Aim (push it all the way to auto-attack) |
 | R2 or Square | Attack |
 | L1 / R1 / L2 | Ability 1 / 2 / 3 |
-| Circle | Ultimate (Shadow Ninja, Vampire Lord) |
+| Circle | Ultimate (Shadow Ninja, Vampire Lord, Wanderer) |
 | Cross (X) | Dash |
 | Triangle | Stairs / interact |
 | Create or Touchpad (hold) | Show stats |

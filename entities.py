@@ -81,6 +81,8 @@ class Player(Entity):
         self.hurt_flash = 0.0
         self.anim = 0.0
         self.moving = False
+        self.q_stacks, self.q_stack_t = 0, 0.0   # Wanderer: Wind Thrust charge (2 = the next one is a tornado)
+        self.storm = None            # Wanderer: Storm Breaker in progress (its targets and slashes left)
         self.slot = 0                # Duo: 0 = Player 1, 1 = Player 2
         self.downed = False          # Duo: knocked down (a partner standing close brings you back)
         self.revive = 0.0            # ...how far the revive has got (seconds)
@@ -111,6 +113,11 @@ class Player(Entity):
 
         if self.launch_t > 0:                        # Monk mid-flight: nothing else until we land
             self.fly_to_mark(dt, game)
+            return
+        if self.buffs.get('storm', 0) > 0:           # Wanderer's Storm Breaker: up in the air slashing (can't be hurt)
+            self.invuln = max(self.invuln, 0.12)
+            self.moving = False
+            self.kx = self.ky = 0.0
             return
 
         pooled = self.buffs.get('pool', 0) > 0       # Vampire Lord sunk into the Blood Pool: can't be hurt,
@@ -264,6 +271,8 @@ class Enemy(Entity):
         self.phase = 1
         self.stun_t = self.slow_t = self.poison_t = 0.0
         self.freeze_t = 0.0        # frozen solid (Ghala's Frozen Heart)
+        self.air_t = self.air_max = 0.0   # knocked up into the air (the Wanderer): can't move or attack
+        self.held_until = 0.0      # ...kept up there by Storm Breaker until this time
         self.petal_cd = 0.0        # how soon Ghala's flower ring may hit this monster again
         self.curse_t = 0.0         # Vampire Lord's Blood Curse: seconds until this monster BURSTS
         self.curse_dmg = 0.0       # ...and how much damage it has taken while cursed (makes the burst bigger)
@@ -338,6 +347,11 @@ class Enemy(Entity):
         self.slow_t = max(0.0, self.slow_t - dt)
         self.petal_cd = max(0.0, self.petal_cd - dt)
 
+        if self.air_t > 0:                           # knocked into the air: can't move, slide or attack
+            self.air_t -= dt
+            self.kx = self.ky = 0.0
+            self.warn = False
+            return
         if self.freeze_t > 0:                        # frozen solid: can't move, slide or attack
             self.freeze_t -= dt
             self.kx = self.ky = 0.0
@@ -908,7 +922,7 @@ class Bolt:
     """YOUR shots (and your allies'): magic bolts, fireballs, knives, arrows."""
     def __init__(self, x, y, vx, vy, dmg, color, radius=6, life=1.2, aoe=0, pierce=False,
                  kind='magic', crit=False, leech=False, mark=False, freeze=0.0, falloff=1.0, volley=None,
-                 src='ability', ghost=False, decay=0.0, essence=False, wait=0.0):
+                 src='ability', ghost=False, decay=0.0, essence=False, wait=0.0, knockup=0.0):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
         self.dmg, self.color, self.radius, self.life = dmg, color, radius, life
         self.aoe, self.pierce, self.kind, self.crit, self.leech = aoe, pierce, kind, crit, leech
@@ -921,6 +935,7 @@ class Bolt:
         self.decay = decay     # ...and each monster after the first takes this much less (never under half)
         self.essence = essence # Essence Wave: marks the monsters it hits
         self.wait = wait       # seconds before it sets off (hidden until then) - shurikens thrown one after another
+        self.knockup = knockup # the Wanderer's tornado: seconds the monsters it hits are knocked into the air
         self.alive = True
         self.hit = set()
 
@@ -988,6 +1003,8 @@ class Bolt:
                     game.freeze_enemy(e, self.freeze)
                 if self.essence and e in game.enemies:
                     game.essence_mark(e)
+                if self.knockup and e in game.enemies:
+                    game.knock_up(e, self.knockup)
                 if not self.pierce:
                     self.alive = False
                     return
